@@ -2,7 +2,7 @@
 window.WL_CONFIG = {
   // Адрес вашего Worker после деплоя, без слэша на конце. Пример:
   // 'https://wuppertal-live-api.ВАШ-САБДОМЕН.workers.dev'
-  API_BASE: '',
+  API_BASE: 'https://wuppertal-live-api.isychev10.workers.dev',
 
   // Автообновление данных, секунд (когда вкладка видима).
   REFRESH_SEC: 60,
