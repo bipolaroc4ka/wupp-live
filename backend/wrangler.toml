@@ -27,10 +27,8 @@ crons = [
 [vars]
 # Адрес вашего frontend (origin, без пути и без слэша на конце). Несколько — через запятую.
 # Пример: "https://ваш-логин.github.io"
-ALLOWED_ORIGINS = "*"
-
-# Nominatim требует идентифицировать приложение. Укажите свою контактную почту или URL проекта.
-NOMINATIM_CONTACT = "ВАШ-КОНТАКТ@example.org"
+ALLOWED_ORIGINS = "https://bipolaroc4ka.github.io"
+NOMINATIM_CONTACT = "isychev10@gmail.com"
 
 # Presseportal: ID «Newsroom» через запятую.
 # 115885 = Feuerwehr Wuppertal (виден в адресе https://www.presseportal.de/nr/115885).
