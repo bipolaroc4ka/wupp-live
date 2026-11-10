@@ -1,7 +1,7 @@
 # Wuppertal Live — конфигурация Cloudflare Worker.
 # НИЧЕГО не разворачивается автоматически: деплой вы запускаете сами (см. docs/CLOUDFLARE.md).
 
-name = "wuppertal-live-api"
+name = "wupp-live"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
