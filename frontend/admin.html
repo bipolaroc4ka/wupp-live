@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Wuppertal Live — Admin</title>
+  <style>
+    :root { --bg:#0b0f14; --panel:#121821; --line:#263040; --text:#e8edf3; --muted:#93a1b3; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --accent:#4da3ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; padding: 16px; max-width: 1100px; margin-inline: auto; }
+    h1 { font-size: 20px; margin: 0 0 12px; } h2 { font-size: 15px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    input, select, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    button { cursor: pointer; } button:hover { border-color: var(--accent); }
+    button.danger:hover { border-color: var(--bad); color: var(--bad); }
+    .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .bar input[type=password] { flex: 1; min-width: 220px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    .wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+    .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+    pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 300px; white-space: pre-wrap; word-break: break-all; }
+    .tags span { display: inline-block; margin: 0 8px 4px 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+    #msg { margin: 10px 0; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Wuppertal Live — администрирование</h1>
+  <p class="muted">Токен хранится только в этой вкладке (sessionStorage) и отправляется на ваш Worker. Секреты в frontend не хранятся.</p>
+  <div class="bar">
+    <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off">
+    <button id="login" type="button">Войти</button>
+    <button id="refresh" type="button">Обновить</button>
+  </div>
+  <div id="msg" role="status"></div>
+
+  <div id="app" hidden>
+    <h2>Статистика</h2>
+    <div class="tags" id="stats"></div>
+
+    <h2>Источники</h2>
+    <div class="wrap"><table id="srcTable"></table></div>
+    <pre id="probe" hidden></pre>
+
+    <h2>События</h2>
+    <div class="bar" style="margin-bottom:8px">
+      <select id="fStatus"><option value="">все статусы</option><option>LIVE</option><option>ACTIVE</option><option>RECENT</option><option>EXPIRED</option><option>RESOLVED</option></select>
+      <select id="fSource"><option value="">все источники</option><option>autobahn</option><option>nina</option><option>presseportal</option></select>
+      <button id="loadEvents" type="button">Показать</button>
+    </div>
+    <div class="wrap"><table id="evTable"></table></div>
+
+    <h2>Последние ошибки</h2>
+    <div class="wrap"><table id="errTable"></table></div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script>
+  (() => {
+    'use strict';
+    const $ = (s) => document.querySelector(s);
+    const base = (window.WL_CONFIG.API_BASE || '').replace(/\/+$/, '');
+    let token = '';
+    try { token = sessionStorage.getItem('wl_admin') || ''; } catch { /* нет хранилища */ }
+    $('#token').value = token;
+
+    const el = (tag, attrs, ...kids) => {
+      const n = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs || {})) { if (k === 'class') n.className = v; else n.setAttribute(k, v); }
+      for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+      return n;
+    };
+    const msg = (text, cls) => { const m = $('#msg'); m.textContent = text || ''; m.className = cls || ''; };
+    const fmt = (iso) => iso ? new Date(iso).toLocaleString('ru-RU', { timeZone: 'Europe/Berlin' }) : '—';
+
+    async function call(path, method = 'GET', body) {
+      if (!base) throw new Error('API_BASE не задан в js/config.js');
+      const res = await fetch(base + path, {
+        method, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      return data;
+    }
+
+    function table(node, head, rows) {
+      node.replaceChildren(
+        el('thead', {}, el('tr', {}, head.map((h) => el('th', {}, h)))),
+        el('tbody', {}, rows.map((r) => el('tr', {}, r.map((c) => el('td', {}, c))))));
+    }
+
+    async function overview() {
+      const o = await call('/api/admin/overview');
+      $('#app').hidden = false;
+      $('#stats').replaceChildren(
+        ...o.events_by_status.map((s) => el('span', {}, `${s.status}: ${s.n}`)),
+        ...o.events_by_source.map((s) => el('span', {}, `${s.source}: ${s.n}`)),
+        el('span', {}, `геокод-кэш: ${o.geocode_cached}`));
+
+      table($('#srcTable'), ['Источник', 'Вкл', 'Интервал', 'Последний успех', 'Получено / изменено', 'Запусков / ошибок', 'Последняя ошибка', ''],
+        o.sources.map((s) => {
+          const toggle = el('button', { type: 'button' }, s.enabled ? 'Выключить' : 'Включить');
+          toggle.onclick = async () => { await call(`/api/admin/sources/${s.id}/toggle`, 'POST', { enabled: !s.enabled }); overview(); };
+          const run = el('button', { type: 'button' }, 'Запустить');
+          run.onclick = async () => {
+            msg('Выполняется…');
+            try { const r = await call(`/api/admin/sources/${s.id}/run`, 'POST'); msg(JSON.stringify(r), r.ok ? 'ok' : 'bad'); } catch (e) { msg(e.message, 'bad'); }
+            overview();
+          };
+          const probe = el('button', { type: 'button' }, 'Проба');
+          probe.onclick = async () => {
+            const p = $('#probe'); p.hidden = false; p.textContent = 'Запрос…';
+            try { p.textContent = JSON.stringify(await call(`/api/admin/sources/${s.id}/probe`), null, 2); } catch (e) { p.textContent = e.message; }
+          };
+          return [s.id, s.enabled ? 'да' : 'нет', `${s.interval_sec} с`, fmt(s.last_success_at),
+            `${s.last_fetched} / ${s.last_changes}`, `${s.runs} / ${s.errors}`,
+            el('span', { class: s.last_error ? 'bad' : 'muted' }, s.last_error ? `${fmt(s.last_error_at)}: ${s.last_error}` : '—'),
+            el('div', { class: 'bar' }, run, probe, toggle)];
+        }));
+
+      table($('#errTable'), ['Время', 'Источник', 'Сообщение'], o.errors.map((e) => [fmt(e.ts), e.source || '', e.message]));
+    }
+
+    async function events() {
+      const q = new URLSearchParams({ limit: '200' });
+      if ($('#fStatus').value) q.set('status', $('#fStatus').value);
+      if ($('#fSource').value) q.set('source', $('#fSource').value);
+      const r = await call('/api/admin/events?' + q);
+      table($('#evTable'), ['Статус', 'Категория', 'Заголовок', 'Источник', 'Место', 'Событие', 'Опубликовано', 'Получено', ''],
+        r.events.map((e) => {
+          const del = el('button', { type: 'button', class: 'danger' }, 'Удалить');
+          del.onclick = async () => {
+            if (!confirm('Удалить запись? Источник не сможет добавить её снова.')) return;
+            await call('/api/admin/events/' + encodeURIComponent(e.id), 'DELETE'); events();
+          };
+          return [e.status, e.category, e.title, e.source, `${e.geo_precision}${e.location_name ? ': ' + e.location_name : ''}`,
+            e.event_time ? `${fmt(e.event_time)} (${e.time_precision})` : 'неизвестно', fmt(e.published_at), fmt(e.received_at), del];
+        }));
+    }
+
+    async function login() {
+      token = $('#token').value.trim();
+      try { sessionStorage.setItem('wl_admin', token); } catch { /* ок */ }
+      msg('');
+      try { await overview(); await events(); } catch (e) { $('#app').hidden = true; msg(e.message, 'bad'); }
+    }
+    $('#login').onclick = login;
+    $('#refresh').onclick = login;
+    $('#loadEvents').onclick = () => events().catch((e) => msg(e.message, 'bad'));
+    $('#token').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+    if (token) login();
+  })();
+  </script>
+</body>
+</html>

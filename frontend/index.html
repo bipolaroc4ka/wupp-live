@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Wuppertal Live</title>
+  <meta name="description" content="Карта текущих событий Вупперталя на основе официальных источников / Karte aktueller Ereignisse in Wuppertal">
+  <meta name="theme-color" content="#0b0f14">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="map" aria-label="Karte"></div>
+
+  <header id="topbar">
+    <div class="row">
+      <div class="brand"><span class="logo" aria-hidden="true"></span><span>Wuppertal <b>Live</b></span></div>
+      <button id="freshness" class="pill" type="button" aria-haspopup="dialog">
+        <span class="dot" id="freshDot"></span><span id="freshText"></span>
+      </button>
+      <button id="langBtn" class="icon-btn" type="button" aria-label="Language">RU</button>
+      <button id="aboutBtn" class="icon-btn" type="button" aria-label="Info">i</button>
+    </div>
+    <div id="banner" class="banner" hidden role="status"></div>
+    <div class="row filters" id="filters">
+      <div id="groupChips" class="chips" role="group"></div>
+    </div>
+    <div class="row selects">
+      <label class="select"><span id="lblDistrict"></span>
+        <select id="districtSel"></select>
+      </label>
+      <label class="select"><span id="lblTime"></span>
+        <select id="timeSel"></select>
+      </label>
+      <button id="cityBtn" class="btn" type="button"></button>
+    </div>
+  </header>
+
+  <section id="sheet" class="peek" aria-label="Events">
+    <div id="sheetHandle" class="handle" role="button" tabindex="0" aria-label="Toggle list"><span></span></div>
+    <div class="sheet-head">
+      <strong id="sheetTitle"></strong>
+      <span class="legal">
+        <a href="impressum.html" id="lnkImpressum">Impressum</a> ·
+        <a href="datenschutz.html" id="lnkPrivacy">Datenschutz</a> ·
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OSM</a>
+      </span>
+    </div>
+    <ul id="list" class="list"></ul>
+  </section>
+
+  <article id="detail" class="detail" hidden role="dialog" aria-modal="false" aria-labelledby="dTitle">
+    <button id="dClose" class="close" type="button" aria-label="×">×</button>
+    <div class="d-badges" id="dBadges"></div>
+    <h2 id="dTitle"></h2>
+    <p id="dDesc" class="d-desc"></p>
+    <div id="dLoc" class="d-loc"></div>
+    <dl id="dTimes" class="d-times"></dl>
+    <div id="dSource" class="d-source"></div>
+    <div class="d-actions">
+      <button id="dShow" class="btn primary" type="button"></button>
+    </div>
+  </article>
+
+  <div id="about" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+    <div class="modal-card">
+      <button id="aboutClose" class="close" type="button" aria-label="×">×</button>
+      <h2 id="aboutTitle"></h2>
+      <div id="aboutBody"></div>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+  <script src="js/i18n.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

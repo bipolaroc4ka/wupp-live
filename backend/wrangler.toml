@@ -1,0 +1,48 @@
+# Wuppertal Live — конфигурация Cloudflare Worker.
+# НИЧЕГО не разворачивается автоматически: деплой вы запускаете сами (см. docs/CLOUDFLARE.md).
+
+name = "wuppertal-live-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[observability]
+enabled = true
+
+# 1) Создайте базу:  npx wrangler d1 create wuppertal-live
+# 2) Вставьте выданный database_id вместо значения ниже.
+[[d1_databases]]
+binding = "DB"
+database_name = "wuppertal-live"
+database_id = "ВСТАВЬТЕ-database_id-ИЗ-wrangler-d1-create"
+
+# Три cron-триггера (лимит бесплатного плана — 5 на аккаунт).
+# Выражения ДОЛЖНЫ совпадать с CRON_MAP в src/cron.js.
+[triggers]
+crons = [
+  "*/2 * * * *",   # Autobahn (дороги)
+  "*/5 * * * *",   # NINA (официальные предупреждения)
+  "*/10 * * * *"   # Presseportal (Feuerwehr/Polizei) + служебные задачи
+]
+
+[vars]
+# Адрес вашего frontend (origin, без пути и без слэша на конце). Несколько — через запятую.
+# Пример: "https://ваш-логин.github.io"
+ALLOWED_ORIGINS = "*"
+
+# Nominatim требует идентифицировать приложение. Укажите свою контактную почту или URL проекта.
+NOMINATIM_CONTACT = "ВАШ-КОНТАКТ@example.org"
+
+# Presseportal: ID «Newsroom» через запятую.
+# 115885 = Feuerwehr Wuppertal (виден в адресе https://www.presseportal.de/nr/115885).
+# ID Polizei Wuppertal найдите на её странице в Presseportal (…/nr/<ID>) и добавьте через запятую.
+PRESSEPORTAL_OFFICE_IDS = "115885"
+
+# Через сколько часов пресс-релиз перестаёт считаться «недавним» (RECENT -> EXPIRED).
+PRESS_TTL_HOURS = "12"
+
+# Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
+AUTOBAHN_ROADS = "A1,A46,A535,A43"
+
+# Секреты (НЕ хранить здесь!) добавляются командами:
+#   npx wrangler secret put ADMIN_TOKEN
+#   npx wrangler secret put PRESSEPORTAL_API_KEY
