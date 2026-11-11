@@ -1,137 +1,116 @@
 
 import { CITY, inCityBbox } from '../config.js';
-import { fetchWithRetry, ISO, truncate } from '../util.js';
+import { fetchWithRetry, ISO, truncate, shortId } from '../util.js';
 import { geocodeStreet } from '../geo.js';
 import { syncSource } from '../events.js';
 
 export const meta = {
   id: 'wuppertal',
-  name: 'Stadt Wuppertal (offizielle Baustellen)',
+  name: 'Stadt Wuppertal (Verkehrs-Pressemitteilungen)',
   intervalSec: 600,
   cron: '*/10 * * * *',
   group: 'traffic'
 };
 
-const INDEX_URL =
-  'https://www.wuppertal.de/rathaus-buergerservice/verkehr/baustellen/aktuelle-baustellen.php';
+const FEED_URL =
+  'https://www.wuppertal.de/presse/aktuelle-meldungen.php?sp%3Aout=rss';
 
-const SCOPE = 'municipal/large-projects';
-const MAX_DETAILS = 40;
-const CONCURRENCY = 5;
-const EVENT_TTL_DAYS = 14;
+const SCOPE = 'municipal/press-roadworks';
+const MAX_AGE_DAYS = 45;
+const EVENT_TTL_DAYS = 30;
+
+const ROAD_KEYWORDS =
+  /\b(baustelle|baumaßnahme|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|umleitung|verkehrsbehinderung|brückensanierung|brückenarbeiten|treppensanierung|geländerarbeiten|fahrbahn|straßensanierung|straßenbau|arbeitsstelle|ampel|verkehr)\b/i;
 
 function decodeHtml(value) {
   return String(value || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&apos;|&#39;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)));
+    .replace(/&#(\d+);/g, (_, n) =>
+      String.fromCodePoint(Number(n))
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
+      String.fromCodePoint(parseInt(n, 16))
+    );
 }
 
-function stripHtml(value) {
+function textOf(value) {
   return decodeHtml(
     String(value || '')
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
       .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|h[1-6]|section|article)>/gi, '\n')
+      .replace(/<\/(?:p|div|li|h[1-6])>/gi, '\n')
       .replace(/<[^>]+>/g, ' ')
   )
     .replace(/\u00a0/g, ' ')
     .replace(/[ \t]+/g, ' ')
-    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n\s+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-function absoluteUrl(href) {
-  try {
-    const url = new URL(href, INDEX_URL);
-    if (url.hostname !== 'www.wuppertal.de') return null;
-    if (!url.pathname.includes('/baustellen/meldungen/')) return null;
-    return url.href;
-  } catch {
-    return null;
-  }
+function tagValue(xml, tag) {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `<(?:[\\w.-]+:)?${escaped}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${escaped}\\s*>`,
+    'i'
+  );
+
+  return xml.match(re)?.[1]?.trim() || '';
 }
 
-function extractDetailLinks(html) {
-  const found = new Map();
-  const re = /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+function parseFeed(xml) {
+  const items = [];
+  const re = /<item\b[^>]*>([\s\S]*?)<\/item\s*>/gi;
 
   let match;
-  while ((match = re.exec(html))) {
-    const url = absoluteUrl(match[2]);
-    if (!url) continue;
 
-    const label = stripHtml(match[3]);
-    if (!label || label.length < 8) continue;
+  while ((match = re.exec(xml))) {
+    const block = match[1];
 
-    found.set(url, { url, label });
+    const title = textOf(tagValue(block, 'title'));
+    const link = textOf(tagValue(block, 'link'));
+    const description = textOf(
+      tagValue(block, 'description') ||
+      tagValue(block, 'encoded')
+    );
+    const guid = textOf(tagValue(block, 'guid'));
+    const pubDate = textOf(tagValue(block, 'pubDate'));
+
+    if (!title || !link) continue;
+
+    let url;
+
+    try {
+      url = new URL(link, 'https://www.wuppertal.de');
+    } catch {
+      continue;
+    }
+
+    if (url.hostname !== 'www.wuppertal.de') continue;
+
+    items.push({
+      title,
+      description: truncate(description, 2200),
+      url: url.href,
+      guid,
+      pubDate
+    });
   }
 
-  return [...found.values()].slice(0, MAX_DETAILS);
-}
-
-function extractMainText(html) {
-  const h1 = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
-  if (!h1) return null;
-
-  const title = stripHtml(h1[1]);
-  const start = html.indexOf(h1[0]) + h1[0].length;
-
-  let body = html.slice(start);
-  const end = body.search(/<h[2-4]\b[^>]*>\s*Erläuterungen und Hinweise/i);
-  if (end >= 0) body = body.slice(0, end);
-
-  const description = stripHtml(body);
-  if (!title || description.length < 40) return null;
-
-  return { title, description: truncate(description, 1800) };
-}
-
-function parseGermanDate(value) {
-  const match = String(value || '').match(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/);
-  if (!match) return null;
-
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  const year = Number(match[3]);
-
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month - 1 ||
-    date.getUTCDate() !== day
-  ) return null;
-
-  return date;
-}
-
-function extractDates(text) {
-  const startMatch = text.match(
-    /\b(?:ab(?:\s+dem)?|seit|Beginn(?:\s+der Arbeiten)?(?:\s+am)?)\s+(\d{1,2}\.\d{1,2}\.\d{4})/i
-  );
-
-  const endMatch = text.match(
-    /\b(?:bis(?:\s+zum)?|voraussichtlich\s+bis|Ende(?:\s+der Arbeiten)?(?:\s+am)?)\s+(\d{1,2}\.\d{1,2}\.\d{4})/i
-  );
-
-  return {
-    start: startMatch ? parseGermanDate(startMatch[1]) : null,
-    end: endMatch ? parseGermanDate(endMatch[1]) : null
-  };
+  return items;
 }
 
 function extractStreet(text) {
   const patterns = [
-    /\b(?:in|auf|an|der|die|im)\s+(?:der\s+)?([A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,2}\s+(?:straße|strasse|weg|platz|allee|ufer|gasse|ring|damm))\b/iu,
-    /\b([A-ZÄÖÜ][\p{L}\d.-]*(?:straße|strasse|weg|platz|allee|ufer|gasse|ring|damm))\b/iu
+    /\b([A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,3}\s+(?:straße|strasse|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig))\b/iu,
+    /\b([A-ZÄÖÜ][\p{L}\d.-]*(?:straße|strasse|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig))\b/iu
   ];
 
   for (const pattern of patterns) {
@@ -142,39 +121,96 @@ function extractStreet(text) {
   return null;
 }
 
-function isCompleted(text) {
-  return /\b(abgeschlossen|fertiggestellt|beendet|vollständig abgeschlossen)\b/i.test(text);
+function parseGermanDate(text) {
+  const full = text.match(
+    /\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/
+  );
+
+  if (full) {
+    const [, d, m, y] = full;
+    const date = new Date(Date.UTC(+y, +m - 1, +d));
+
+    if (
+      date.getUTCDate() === +d &&
+      date.getUTCMonth() === +m - 1 &&
+      date.getUTCFullYear() === +y
+    ) return date;
+  }
+
+  const short = text.match(
+    /\b(?:ab|bis|seit|voraussichtlich bis)\s+(?:Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)?\s*(\d{1,2})\.\s*(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b/i
+  );
+
+  if (!short) return null;
+
+  const months = {
+    januar: 0,
+    februar: 1,
+    märz: 2,
+    april: 3,
+    mai: 4,
+    juni: 5,
+    juli: 6,
+    august: 7,
+    september: 8,
+    oktober: 9,
+    november: 10,
+    dezember: 11
+  };
+
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  const month = months[short[2].toLowerCase()];
+
+  if (month < now.getUTCMonth() - 1) year++;
+
+  return new Date(Date.UTC(year, month, Number(short[1])));
 }
 
 function classify(text) {
   if (
     /\b(vollsperrung|voll gesperrt|gesperrt|sperrung|umleitung|nicht passierbar)\b/i.test(text)
-  ) return 'road_closure';
+  ) {
+    return 'road_closure';
+  }
 
   return 'roadworks';
 }
 
-function makeEvent(detail, geo, now) {
-  const { url, title, description } = detail;
-  const text = `${title}\n${description}`;
+function isRoadEvent(item) {
+  const text = `${item.title} ${item.description}`;
+  return ROAD_KEYWORDS.test(text) && Boolean(extractStreet(text));
+}
 
-  if (isCompleted(text)) return null;
+async function toEvent(ctx, item) {
+  const text = `${item.title}\n${item.description}`;
 
-  const dates = extractDates(text);
+  if (!isRoadEvent(item)) return null;
 
-  // Noch nicht begonnene Arbeiten nicht als aktuelle Ereignisse anzeigen.
-  if (dates.start && dates.start.getTime() > now) return null;
+  const publishedMs = Date.parse(item.pubDate || '');
+  const publishedAt = Number.isFinite(publishedMs)
+    ? new Date(publishedMs).toISOString()
+    : null;
 
-  // Если официально указан срок окончания и он уже прошёл,
-  // событие не должно появляться на карте.
-  if (dates.end && dates.end.getTime() < now) return null;
+  if (
+    publishedMs &&
+    ctx.now - publishedMs > MAX_AGE_DAYS * 86400000
+  ) return null;
 
   const street = extractStreet(text);
-  const location = street || title;
+  let geo = null;
 
-  const expiresAt = dates.end
-    ? dates.end.getTime() + 2 * 24 * 60 * 60 * 1000
-    : now + EVENT_TTL_DAYS * 24 * 60 * 60 * 1000;
+  if (street && ctx.geoBudget > 0) {
+    try {
+      geo = await geocodeStreet(ctx, street);
+
+      if (geo?.pending) {
+        ctx.log(`wuppertal: geocoding pending: ${street}`);
+      }
+    } catch (error) {
+      ctx.log(`wuppertal geocode ${street}: ${error.message}`);
+    }
+  }
 
   const hasGeo =
     geo &&
@@ -182,187 +218,110 @@ function makeEvent(detail, geo, now) {
     Number.isFinite(geo.lon) &&
     inCityBbox(geo.lat, geo.lon);
 
+  const start = parseGermanDate(text);
+  const end = parseGermanDate(
+    text.match(/(?:bis|voraussichtlich bis)[\s\S]{0,50}/i)?.[0] || ''
+  );
+
+  const expiresAt = end
+    ? end.getTime() + 2 * 86400000
+    : Math.max(
+        ctx.now + EVENT_TTL_DAYS * 86400000,
+        publishedMs ? publishedMs + EVENT_TTL_DAYS * 86400000 : 0
+      );
+
+  const id = item.guid || item.url;
+
   return {
-    source_event_id: new URL(url).pathname,
+    source_event_id: await shortId(id),
     scope: SCOPE,
-    publisher: 'Stadt Wuppertal – Ressort Straßen und Verkehr',
-    title,
-    description,
+    publisher: 'Stadt Wuppertal',
+    title: item.title,
+    description: item.description || null,
     category: classify(text),
-    source_url: url,
+    source_url: item.url,
     latitude: hasGeo ? geo.lat : null,
     longitude: hasGeo ? geo.lon : null,
     geo_precision: hasGeo ? geo.precision : 'none',
-    location_name: location,
-    district: hasGeo ? (geo.district || null) : null,
-    event_time: dates.start ? ISO(dates.start.getTime()) : null,
-    time_precision: dates.start ? 'day' : 'unknown',
-    published_at: null,
+    location_name: street,
+    district: hasGeo ? geo.district || null : null,
+    event_time: start ? ISO(start.getTime()) : null,
+    time_precision: start ? 'day' : 'unknown',
+    published_at: publishedAt,
     expires_at: ISO(expiresAt),
-    status: 'ACTIVE',
-    status_reason: 'listed_on_official_city_baustellen_page',
-    confidence: hasGeo ? 0.85 : 0.75,
+    status: 'RECENT',
+    status_reason: 'official_city_traffic_press_release',
+    confidence: hasGeo ? 0.85 : 0.7,
     is_verified: 1
   };
 }
 
-async function mapLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let next = 0;
-
-  async function worker() {
-    while (true) {
-      const index = next++;
-      if (index >= items.length) return;
-
-      try {
-        results[index] = await fn(items[index], index);
-      } catch (error) {
-        results[index] = { error };
-      }
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, () => worker())
-  );
-
-  return results;
-}
-
-async function fetchDetail(link) {
-  const response = await fetchWithRetry(link.url, {
-    timeoutMs: 10000,
-    retries: 2,
-    backoffMs: 700,
-    headers: {
-      accept: 'text/html,application/xhtml+xml',
-      'user-agent': 'WuppertalLive/1.0 (local traffic information aggregator)'
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${link.url}`);
-  }
-
-  const html = await response.text();
-  const parsed = extractMainText(html);
-
-  if (!parsed) {
-    throw new Error(`Cannot parse official detail page: ${link.url}`);
-  }
-
-  return {
-    ...parsed,
-    url: link.url
-  };
-}
-
 export async function run(ctx) {
-  const indexResponse = await fetchWithRetry(INDEX_URL, {
+  const response = await fetchWithRetry(FEED_URL, {
     timeoutMs: 12000,
     retries: 2,
     backoffMs: 800,
     headers: {
-      accept: 'text/html,application/xhtml+xml',
-      'user-agent': 'WuppertalLive/1.0 (local traffic information aggregator)'
-    }
-  });
-
-  if (!indexResponse.ok) {
-    throw new Error(`Wuppertal Baustellen page HTTP ${indexResponse.status}`);
-  }
-
-  const indexHtml = await indexResponse.text();
-  const links = extractDetailLinks(indexHtml);
-
-  if (!links.length) {
-    throw new Error('No official Baustellen detail links found; refusing empty sync');
-  }
-
-  ctx.log(`wuppertal: found ${links.length} official detail links`);
-
-  const results = await mapLimit(links, CONCURRENCY, fetchDetail);
-
-  const details = [];
-  let failures = 0;
-
-  for (const result of results) {
-    if (result && result.error) {
-      failures++;
-      ctx.log(`wuppertal detail: ${result.error.message || result.error}`);
-    } else if (result) {
-      details.push(result);
-    }
-  }
-
-  if (!details.length) {
-    throw new Error('All Wuppertal Baustellen detail pages failed');
-  }
-
-  const items = [];
-  let geocoded = 0;
-
-  for (const detail of details) {
-    const text = `${detail.title}\n${detail.description}`;
-    const street = extractStreet(text);
-    let geo = null;
-
-    if (street && ctx.geoBudget > 0) {
-      try {
-        geo = await geocodeStreet(ctx, street);
-
-        if (geo && geo.pending) {
-          ctx.log(`wuppertal: geocoding budget exhausted at ${street}`);
-        } else if (geo && geo.precision === 'street') {
-          geocoded++;
-        }
-      } catch (error) {
-        ctx.log(`wuppertal geocode ${street}: ${error.message}`);
-      }
-    }
-
-    const item = makeEvent(detail, geo, ctx.now);
-    if (item) items.push(item);
-  }
-
-  // Missing events are resolved only if every detail page was read successfully.
-  // This prevents a temporary outage of one city page from removing valid events.
-  const resolvedScopes = failures === 0
-    ? new Set([SCOPE])
-    : new Set();
-
-  const stats = await syncSource(ctx, meta.id, items, {
-    resolveMissing: true,
-    resolvedScopes
-  });
-
-  return {
-    ...stats,
-    detail_pages: details.length,
-    detail_failures: failures,
-    geocoded,
-    partial_failures: failures
-  };
-}
-
-export async function probe(ctx) {
-  const response = await fetchWithRetry(INDEX_URL, {
-    timeoutMs: 12000,
-    retries: 1,
-    headers: {
-      accept: 'text/html',
+      accept: 'application/rss+xml, application/xml, text/xml',
       'user-agent': 'WuppertalLive/1.0'
     }
   });
 
-  const html = await response.text();
-  const links = extractDetailLinks(html);
+  if (!response.ok) {
+    throw new Error(`Wuppertal RSS HTTP ${response.status}`);
+  }
+
+  const xml = await response.text();
+
+  if (!/<(?:rss|feed)\b/i.test(xml)) {
+    throw new Error('Wuppertal RSS returned unexpected content');
+  }
+
+  const feedItems = parseFeed(xml);
+
+  if (!feedItems.length) {
+    throw new Error('Wuppertal RSS contains no items');
+  }
+
+  const roadItems = feedItems.filter(isRoadEvent);
+  const events = [];
+
+  for (const item of roadItems) {
+    const event = await toEvent(ctx, item);
+    if (event) events.push(event);
+  }
+
+  // RSS — ограниченная лента последних сообщений.
+  // Не разрешаем события только потому, что они выпали из RSS.
+  const stats = await syncSource(ctx, meta.id, events, {
+    resolveMissing: false
+  });
 
   return {
-    url: INDEX_URL,
+    ...stats,
+    rss_items: feedItems.length,
+    road_items: roadItems.length,
+    geocoded: events.filter((e) => e.geo_precision === 'street').length
+  };
+}
+
+export async function probe() {
+  const response = await fetchWithRetry(FEED_URL, {
+    timeoutMs: 12000,
+    retries: 1,
+    headers: {
+      accept: 'application/rss+xml, application/xml, text/xml',
+      'user-agent': 'WuppertalLive/1.0'
+    }
+  });
+
+  const xml = await response.text();
+  const items = parseFeed(xml);
+
+  return {
+    url: FEED_URL,
     status: response.status,
-    detail_links: links.length,
-    sample: links.slice(0, 5)
+    rss_items: items.length,
+    sample: items.slice(0, 5)
   };
 }
