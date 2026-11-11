@@ -1,10 +1,9 @@
 
- // Планировщик: запуск источников, учёт состояния, служебные задачи.
-
 import * as autobahn from './sources/autobahn.js';
 import * as nina from './sources/nina.js';
 import * as presseportal from './sources/presseportal.js';
 import * as wuppertal from './sources/wuppertal.js';
+import * as mobidrom from './sources/mobidrom.js';
 
 import { sweepExpired, cleanupOld } from './events.js';
 import { geocodeStreet } from './geo.js';
@@ -14,14 +13,20 @@ export const SOURCES = {
   autobahn,
   nina,
   presseportal,
-  wuppertal
+  wuppertal,
+  mobidrom
 };
 
 // Должно совпадать с [triggers].crons в wrangler.toml.
 export const CRON_MAP = {
   '*/2 * * * *': ['autobahn'],
   '*/5 * * * *': ['nina'],
-  '*/10 * * * *': ['presseportal', 'wuppertal', '__maintenance']
+  '*/10 * * * *': [
+    'presseportal',
+    'wuppertal',
+    'mobidrom',
+    '__maintenance'
+  ]
 };
 
 export function makeCtx(env) {
@@ -33,37 +38,54 @@ export function makeCtx(env) {
     geoBudget: 3,
     lastGeoAt: 0,
     logs,
-    log: (m) => {
-      logs.push(String(m));
-      console.log(m);
+    log: (message) => {
+      logs.push(String(message));
+      console.log(message);
     }
   };
 }
 
 export async function ensureSources(env) {
-  const stmts = Object.values(SOURCES).map(({ meta }) =>
+  const statements = Object.values(SOURCES).map(({ meta }) =>
     env.DB.prepare(
-      'INSERT OR IGNORE INTO sources (id, name, enabled, interval_sec) VALUES (?, ?, 1, ?)'
-    ).bind(meta.id, meta.name, meta.intervalSec)
+      `INSERT OR IGNORE INTO sources
+       (id, name, enabled, interval_sec)
+       VALUES (?, ?, 1, ?)`
+    ).bind(
+      meta.id,
+      meta.name,
+      meta.intervalSec
+    )
   );
 
-  await env.DB.batch(stmts);
+  await env.DB.batch(statements);
 }
 
 async function logError(env, source, message) {
   try {
     await env.DB.prepare(
-      'INSERT INTO error_log (ts, source, message) VALUES (?, ?, ?)'
-    ).bind(ISO(Date.now()), source, truncate(message, 500)).run();
+      `INSERT INTO error_log (ts, source, message)
+       VALUES (?, ?, ?)`
+    ).bind(
+      ISO(Date.now()),
+      source,
+      truncate(message, 500)
+    ).run();
   } catch {
     // Логирование не должно ронять задачу.
   }
 }
 
-export async function runSource(env, id, { manual = false } = {}) {
+export async function runSource(
+  env,
+  id,
+  { manual = false } = {}
+) {
   const mod = SOURCES[id];
 
-  if (!mod) throw new Error(`unknown source: ${id}`);
+  if (!mod) {
+    throw new Error(`unknown source: ${id}`);
+  }
 
   await ensureSources(env);
 
@@ -100,7 +122,8 @@ export async function runSource(env, id, { manual = false } = {}) {
 
     return { ok: true, ...result };
   } catch (error) {
-    const message = (error && error.message) || String(error);
+    const message =
+      (error && error.message) || String(error);
 
     console.error(`[${id}] ${message}`);
 
@@ -121,12 +144,13 @@ export async function runSource(env, id, { manual = false } = {}) {
 
     await logError(env, id, message);
 
-    return { ok: false, error: message };
+    return {
+      ok: false,
+      error: message
+    };
   }
 }
 
-// Повторная попытка геокодирования для релизов,
-// у которых не хватило бюджета запросов.
 async function retryGeocoding(env) {
   const ctx = makeCtx(env);
 
@@ -134,7 +158,7 @@ async function retryGeocoding(env) {
     await env.DB.prepare(
       `SELECT id, location_name, geocode_attempts
        FROM events
-       WHERE source = 'presseportal'
+       WHERE source IN ('presseportal', 'wuppertal', 'mobidrom')
          AND status IN ('LIVE','ACTIVE','RECENT')
          AND geo_precision = 'none'
          AND location_name IS NOT NULL
@@ -146,13 +170,18 @@ async function retryGeocoding(env) {
 
   for (const row of rows) {
     try {
-      const geo = await geocodeStreet(ctx, row.location_name);
+      const geo = await geocodeStreet(
+        ctx,
+        row.location_name
+      );
 
       if (geo && geo.pending) break;
 
       if (!geo) {
         await env.DB.prepare(
-          'UPDATE events SET geocode_attempts = geocode_attempts + 1 WHERE id = ?'
+          `UPDATE events
+           SET geocode_attempts = geocode_attempts + 1
+           WHERE id = ?`
         ).bind(row.id).run();
       } else if (geo.precision === 'street') {
         await env.DB.prepare(
@@ -207,17 +236,23 @@ export async function runScheduled(env, cronExpr) {
       try {
         await maintenance(env);
       } catch (error) {
-        await logError(env, 'maintenance', error.message);
+        await logError(
+          env,
+          'maintenance',
+          error.message
+        );
       }
     } else {
       await runSource(env, id);
 
-      // Сразу после запуска источника переводим просроченные
-      // записи в EXPIRED.
       try {
         await sweepExpired(makeCtx(env));
       } catch (error) {
-        await logError(env, 'maintenance', error.message);
+        await logError(
+          env,
+          'maintenance',
+          error.message
+        );
       }
     }
   }
