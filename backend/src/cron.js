@@ -1,4 +1,7 @@
 
+// Планировщик: запуск источников, учёт состояния, служебные задачи,
+// повторное геокодирование и автоматический перевод событий.
+
 import * as autobahn from './sources/autobahn.js';
 import * as nina from './sources/nina.js';
 import * as presseportal from './sources/presseportal.js';
@@ -7,6 +10,7 @@ import * as mobidrom from './sources/mobidrom.js';
 
 import { sweepExpired, cleanupOld } from './events.js';
 import { geocodeStreet } from './geo.js';
+import { translatePending } from './translate.js';
 import { ISO, truncate } from './util.js';
 
 export const SOURCES = {
@@ -151,6 +155,8 @@ export async function runSource(
   }
 }
 
+// Повторная попытка геокодирования для событий,
+// которым не хватило бюджета запросов при первоначальной обработке.
 async function retryGeocoding(env) {
   const ctx = makeCtx(env);
 
@@ -205,6 +211,7 @@ async function retryGeocoding(env) {
           `UPDATE events
            SET geo_precision = 'district',
                district = ?,
+               confidence = 0.6,
                updated_at = ?
            WHERE id = ?`
         ).bind(
@@ -220,11 +227,31 @@ async function retryGeocoding(env) {
   }
 }
 
+// Служебные задачи: статусы, геокодирование,
+// автоматический перевод и очистка старых событий.
 async function maintenance(env) {
   const ctx = makeCtx(env);
 
   await sweepExpired(ctx);
+
   await retryGeocoding(env);
+
+  // Перевод новых событий и событий, для которых
+  // перевод ещё отсутствует или требует обновления.
+  try {
+    const result = await translatePending(env);
+
+    if (result?.error) {
+      await logError(env, 'translate', result.error);
+    }
+  } catch (error) {
+    await logError(
+      env,
+      'translate',
+      error.message || String(error)
+    );
+  }
+
   await cleanupOld(ctx);
 }
 
@@ -239,19 +266,20 @@ export async function runScheduled(env, cronExpr) {
         await logError(
           env,
           'maintenance',
-          error.message
+          error.message || String(error)
         );
       }
     } else {
       await runSource(env, id);
 
+      // После обновления источника проверяем актуальность статусов.
       try {
         await sweepExpired(makeCtx(env));
       } catch (error) {
         await logError(
           env,
           'maintenance',
-          error.message
+          error.message || String(error)
         );
       }
     }
