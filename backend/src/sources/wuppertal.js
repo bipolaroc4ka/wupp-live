@@ -142,7 +142,6 @@ function isBoilerplateItem(item) {
     return true;
   }
 
-  // Не принимаем заголовки, состоящие только из навигационного текста.
   if (
     BOILERPLATE_PREFIX.test(title) &&
     title.replace(BOILERPLATE_PREFIX, '').trim().length < 100
@@ -156,7 +155,6 @@ function isBoilerplateItem(item) {
 function cleanDescription(value) {
   let description = textOf(value);
 
-  // Удаляем навигационную строку, если она попала в начало описания.
   description = description.replace(
     /^\s*(?:sie befinden sich hier\s*:)[^\n]*(?:\n|$)/i,
     ''
@@ -212,7 +210,6 @@ function parseFeed(xml) {
       pubDate
     };
 
-    // Отсекаем навигационные записи до геокодирования.
     if (isBoilerplateItem(item)) continue;
 
     items.push(item);
@@ -220,17 +217,6 @@ function parseFeed(xml) {
 
   return items;
 }
-
-/**
- * Ищет все возможные названия улиц в тексте.
- *
- * Поддерживает:
- * Siebeneicker Straße
- * Friedrich-Engels-Allee
- * Friedrich-Engels-Allee
- * Am Unterbarmer Friedhof
- * Oberer Grifflenberg
- */
 
 /**
  * Ищет возможные названия улиц в тексте.
@@ -241,8 +227,8 @@ function parseFeed(xml) {
  * Am Unterbarmer Friedhof
  * Oberer Grifflenberg
  *
- * Важно: точка в конце предложения не должна становиться
- * частью названия улицы.
+ * Точка не включается в название, чтобы не захватывать
+ * начало следующего предложения.
  */
 function extractStreetCandidates(text) {
   if (!text) return [];
@@ -260,8 +246,7 @@ function extractStreetCandidates(text) {
       'gu'
     ),
 
-    // Названия с предлогами.
-    // Точку намеренно исключили: она может быть концом предложения.
+    // Названия с предлогами: Am Elisabetheim, Auf der Höhe и т. д.
     /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
   ];
 
@@ -298,13 +283,16 @@ function extractStreetCandidates(text) {
 }
 
 /**
- * Определяет тип географической привязки.
+ * Разбирает географическую привязку.
  *
- * Особая обработка:
- * zwischen Untenrohleder und Am Elisabetheim.
+ * Приоритет:
+ * 1. Участок между двумя улицами: zwischen X und Y.
+ * 2. Перекрёсток.
+ * 3. Одиночная улица.
  *
- * Здесь Untenrohleder не имеет стандартного окончания улицы,
- * поэтому нельзя полагаться только на общий поиск STREET_SUFFIX.
+ * Для конструкции zwischen X und Y названия извлекаются
+ * непосредственно из фразы, а не из общего списка улиц.
+ * Это позволяет распознавать Untenrohleder без суффикса Straße.
  */
 function extractLocation(text) {
   if (!text) {
@@ -315,8 +303,7 @@ function extractLocation(text) {
     };
   }
 
-  // Сначала разбираем конструкции "zwischen X und Y".
-  // Это позволяет распознавать и названия без Straße/Weg/Platz.
+  // 1. Участок между двумя улицами.
   const betweenMatch = /\bzwischen\s+/i.exec(text);
 
   if (betweenMatch) {
@@ -324,11 +311,10 @@ function extractLocation(text) {
       betweenMatch.index + betweenMatch[0].length
     );
 
-    // Берём только текущую конструкцию до конца предложения.
-    // Следующее предложение (например, "Auf einer Fläche...")
-    // не может попасть в название второй улицы.
+    // Останавливаемся на конце предложения, строки или перед
+    // точкой с запятой. Не захватываем следующее предложение.
     const pairMatch = segment.match(
-      /^\s*(.+?)\s+und\s+(.+?)(?=[.!?;,\n]|$)/i
+      /^\s*([^.!?;,\n]+?)\s+und\s+([^.!?;,\n]+?)(?=[.!?;,\n]|$)/i
     );
 
     if (pairMatch) {
@@ -343,7 +329,9 @@ function extractLocation(text) {
 
       if (
         streets.length === 2 &&
-        streets.every((street) => street.length >= 3 && street.length <= 100)
+        streets.every((street) =>
+          street.length >= 3 && street.length <= 100
+        )
       ) {
         return {
           type: 'between',
@@ -364,7 +352,7 @@ function extractLocation(text) {
     };
   }
 
-  // Перекрёстки.
+  // 2. Перекрёстки.
   const intersectionMatch =
     /\b(kreuzung|kreuzungsbereich|ecke|einmündung|muendung|mündung|kreuzen sich)\b/i.exec(text);
 
@@ -404,6 +392,7 @@ function extractLocation(text) {
     }
   }
 
+  // 3. Одиночная улица.
   return {
     type: 'single',
     streets: [candidates[0].name],
@@ -733,7 +722,6 @@ async function toEvent(ctx, item, analysis) {
   }
 
   const location = analysis.location;
-
   const geo = await geocodeLocation(ctx, location);
 
   const hasGeo =
