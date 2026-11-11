@@ -7,6 +7,8 @@ window.WL_I18N = {
     staleWarn: 'Данные некоторых источников устарели',
     offlineBanner: 'Нет связи с сервером. Показаны сохранённые данные от {time} — они могут быть неактуальны.',
     noConfig: 'Не указан адрес сервера (API_BASE в js/config.js).',
+    fileMode: 'Сайт открыт как файл (file://). OpenStreetMap блокирует тайлы без Referer. Запустите локальный сервер (см. README: «Локальный просмотр») или откройте опубликованный сайт.',
+    tileFail: 'Тайлы карты не загружаются. Возможные причины: блокировка OpenStreetMap (нет Referer, слишком много запросов) или нет сети. События в списке при этом доступны.',
     loadError: 'Не удалось загрузить данные.',
     loading: 'Загрузка…',
     empty: 'Нет событий по выбранным условиям. Это не означает, что в городе ничего не происходит: показаны только данные подключённых источников.',
@@ -50,7 +52,17 @@ window.WL_I18N = {
     src_presseportal: 'Presseportal: пресс-релизы Feuerwehr и Polizei Wuppertal (проверка ~10 мин, публикация с задержкой).',
     legendTitle: 'Обозначения маркеров',
     legendLive: 'пульсирующее кольцо — LIVE', legendActive: 'сплошное кольцо — действует', legendRecent: 'пунктир — недавно, актуальность неизвестна', legendApprox: 'штриховая зона — приблизительное место',
-    ago_now: 'только что', impressum: 'Impressum', privacy: 'Datenschutz', close: 'Закрыть'
+    ago_now: 'только что', impressum: 'Impressum', privacy: 'Datenschutz', close: 'Закрыть',
+    tabNow: 'Сейчас', tabLong: 'Долгосрочные', grpActive: 'Действует сейчас', grpRecent: 'Недавние сообщения, актуальность неизвестна',
+    longList: 'Работы и перекрытия, которые идут дольше {n} дн. Источник не передаёт дату окончания, поэтому сверяйтесь с источником.',
+    sinceDays: 'уже {n} дн.',
+    longDetail: 'Идёт уже {n} дн. (с {date}). В полученных данных нет даты окончания: проверьте актуальность по ссылке на источник.',
+    endUnknown: 'В полученных данных нет даты окончания.',
+    emptyLong: 'Долгосрочных работ по выбранным условиям нет.',
+    filters: 'Фильтры', resetFilters: 'Сбросить фильтры', menu: 'Меню', language: 'Язык', theme: 'Тема',
+    themeAuto: 'Авто', themeLight: 'Светлая', themeDark: 'Тёмная',
+    periodHint: 'Период относится к недавним сообщениям. Действующие события источников показываются независимо от него.',
+    lagPub: 'опубликовано через {d}', u_d: 'д', u_h: 'ч', u_m: 'мин', toList: 'К списку'
   },
   de: {
     langCode: 'DE', htmlLang: 'de', locale: 'de-DE',
@@ -59,6 +71,8 @@ window.WL_I18N = {
     staleWarn: 'Daten einiger Quellen sind veraltet',
     offlineBanner: 'Keine Verbindung zum Server. Gespeicherte Daten von {time} werden angezeigt – sie können veraltet sein.',
     noConfig: 'Server-Adresse fehlt (API_BASE in js/config.js).',
+    fileMode: 'Die Seite wurde als Datei (file://) geöffnet. OpenStreetMap blockiert Kacheln ohne Referer. Starten Sie einen lokalen Server (siehe README) oder öffnen Sie die veröffentlichte Seite.',
+    tileFail: 'Kartenkacheln werden nicht geladen. Mögliche Ursachen: Sperre durch OpenStreetMap (fehlender Referer, zu viele Anfragen) oder keine Verbindung. Die Ereignisliste bleibt verfügbar.',
     loadError: 'Daten konnten nicht geladen werden.',
     loading: 'Lädt…',
     empty: 'Keine Ereignisse für die gewählten Filter. Das heißt nicht, dass nichts passiert: Es werden nur Daten der angebundenen Quellen gezeigt.',
@@ -102,6 +116,16 @@ window.WL_I18N = {
     src_presseportal: 'Presseportal: Pressemitteilungen von Feuerwehr und Polizei Wuppertal (Prüfung ~10 Min., Veröffentlichung verzögert).',
     legendTitle: 'Markierungen',
     legendLive: 'pulsierender Ring – LIVE', legendActive: 'durchgehender Ring – aktiv', legendRecent: 'gestrichelt – kürzlich, Aktualität unbekannt', legendApprox: 'gestrichelte Fläche – ungefährer Ort',
-    ago_now: 'gerade eben', impressum: 'Impressum', privacy: 'Datenschutz', close: 'Schließen'
+    ago_now: 'gerade eben', impressum: 'Impressum', privacy: 'Datenschutz', close: 'Schließen',
+    tabNow: 'Aktuell', tabLong: 'Langfristig', grpActive: 'Aktuell gültig', grpRecent: 'Neueste Meldungen, Aktualität unbekannt',
+    longList: 'Baustellen und Sperrungen, die länger als {n} Tage laufen. Die Quelle liefert kein Enddatum, bitte bei der Quelle prüfen.',
+    sinceDays: 'seit {n} Tg.',
+    longDetail: 'Läuft seit {n} Tagen (ab {date}). In den erhaltenen Daten fehlt ein Enddatum: Aktualität bitte über den Quelllink prüfen.',
+    endUnknown: 'In den erhaltenen Daten fehlt ein Enddatum.',
+    emptyLong: 'Keine langfristigen Maßnahmen für die gewählten Filter.',
+    filters: 'Filter', resetFilters: 'Filter zurücksetzen', menu: 'Menü', language: 'Sprache', theme: 'Design',
+    themeAuto: 'Auto', themeLight: 'Hell', themeDark: 'Dunkel',
+    periodHint: 'Der Zeitraum gilt für neueste Meldungen. Aktive Meldungen der Quellen werden unabhängig davon angezeigt.',
+    lagPub: 'veröffentlicht nach {d}', u_d: 'T', u_h: 'Std', u_m: 'Min', toList: 'Zur Liste'
   }
 };
