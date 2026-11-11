@@ -20,6 +20,14 @@ const MAX_AGE_DAYS = 45;
 const EVENT_TTL_DAYS = 30;
 const DAY = 86400000;
 
+const ALLOWED_GEO_PRECISIONS = new Set([
+  'source',
+  'street',
+  'district',
+  'city',
+  'none'
+]);
+
 const ROAD_KEYWORDS =
   /\b(baustelle|baustellen|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|halbseitige sperrung|umleitung|verkehrsbehinderung|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|fahrbahnschäden|fahrbahn|straßensanierung|straßenbau|arbeitsstelle|ampelanlage|ampelarbeiten|lichtsignalanlage|gehwegsanierung|gehweg|radwegsanierung|radweg|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|deckensanierung|pflasterarbeiten|unterführung|tunnelarbeiten|verkehrsführung|verkehrssicherung|brücke|brücken|tunnel|stützmauer|stützwand)\b/i;
 
@@ -246,7 +254,8 @@ function extractStreetCandidates(text) {
       'gu'
     ),
 
-    // Названия с предлогами: Am Elisabetheim, Auf der Höhe и т. д.
+    // Названия с предлогами.
+    // Точка исключена из допустимых символов.
     /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
   ];
 
@@ -265,7 +274,7 @@ function extractStreetCandidates(text) {
     }
   }
 
-  // Убираем дубликаты, сохраняя порядок появления в тексте.
+  // Убираем дубликаты, сохраняя порядок появления.
   const unique = new Map();
 
   for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
@@ -283,16 +292,82 @@ function extractStreetCandidates(text) {
 }
 
 /**
- * Разбирает географическую привязку.
+ * Извлекает названия из конструкции:
+ * zwischen X und Y
+ *
+ * Сначала ограничивает область поиска концом предложения,
+ * затем разделяет её по союзу und.
+ *
+ * Благодаря этому:
+ * "zwischen Untenrohleder und Am Elisabetheim. Auf einer Fläche..."
+ *
+ * превращается в:
+ * ["Untenrohleder", "Am Elisabetheim"]
+ */
+function extractBetweenLocation(text) {
+  const match = /\bzwischen\s+/i.exec(text);
+
+  if (!match) return null;
+
+  const segment = text.slice(
+    match.index + match[0].length
+  );
+
+  const sentenceEnd = segment.search(/[.!?;\n]/);
+
+  const clause = (
+    sentenceEnd >= 0
+      ? segment.slice(0, sentenceEnd)
+      : segment
+  ).trim();
+
+  // Разделяем только по первому союзу und.
+  const separator = /\s+und\s+/i.exec(clause);
+
+  if (!separator) return null;
+
+  const first = clause
+    .slice(0, separator.index)
+    .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
+    .trim();
+
+  const second = clause
+    .slice(separator.index + separator[0].length)
+    .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
+    .trim();
+
+  if (
+    first.length < 3 ||
+    second.length < 3 ||
+    first.length > 100 ||
+    second.length > 100
+  ) {
+    return null;
+  }
+
+  // Не принимаем случайный фрагмент предложения
+  // в качестве названия второй улицы.
+  if (
+    !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(first) ||
+    !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(second)
+  ) {
+    return null;
+  }
+
+  return {
+    type: 'between',
+    streets: [first, second],
+    label: `zwischen ${first} und ${second}`
+  };
+}
+
+/**
+ * Определяет тип географической привязки.
  *
  * Приоритет:
- * 1. Участок между двумя улицами: zwischen X und Y.
+ * 1. Участок между двумя улицами.
  * 2. Перекрёсток.
  * 3. Одиночная улица.
- *
- * Для конструкции zwischen X und Y названия извлекаются
- * непосредственно из фразы, а не из общего списка улиц.
- * Это позволяет распознавать Untenrohleder без суффикса Straße.
  */
 function extractLocation(text) {
   if (!text) {
@@ -303,43 +378,11 @@ function extractLocation(text) {
     };
   }
 
-  // 1. Участок между двумя улицами.
-  const betweenMatch = /\bzwischen\s+/i.exec(text);
+  // 1. Сначала пробуем разобрать участок между улицами.
+  const between = extractBetweenLocation(text);
 
-  if (betweenMatch) {
-    const segment = text.slice(
-      betweenMatch.index + betweenMatch[0].length
-    );
-
-    // Останавливаемся на конце предложения, строки или перед
-    // точкой с запятой. Не захватываем следующее предложение.
-    const pairMatch = segment.match(
-      /^\s*([^.!?;,\n]+?)\s+und\s+([^.!?;,\n]+?)(?=[.!?;,\n]|$)/i
-    );
-
-    if (pairMatch) {
-      const streets = [
-        pairMatch[1],
-        pairMatch[2]
-      ].map((value) =>
-        value
-          .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
-          .trim()
-      );
-
-      if (
-        streets.length === 2 &&
-        streets.every((street) =>
-          street.length >= 3 && street.length <= 100
-        )
-      ) {
-        return {
-          type: 'between',
-          streets,
-          label: `zwischen ${streets[0]} und ${streets[1]}`
-        };
-      }
-    }
+  if (between) {
+    return between;
   }
 
   const candidates = extractStreetCandidates(text);
@@ -647,10 +690,26 @@ function analyzeRoadItem(item) {
 }
 
 /**
+ * Нормализует precision к значениям, разрешённым схемой D1.
+ * Значение approximate никогда не передаётся в geo_precision.
+ */
+function normalizeGeoPrecision(value) {
+  if (ALLOWED_GEO_PRECISIONS.has(value)) {
+    return value;
+  }
+
+  return 'street';
+}
+
+/**
  * Геокодирует одну или несколько улиц.
  *
- * Для перекрёстков и участков вычисляет приблизительный
- * центр между найденными точками.
+ * Для участков и перекрёстков:
+ * - геокодирует каждую улицу отдельно;
+ * - вычисляет среднюю точку;
+ * - помечает результат как приблизительный отдельным флагом.
+ *
+ * Для одиночной улицы сохраняет точность геокодера.
  */
 async function geocodeLocation(ctx, location) {
   if (!location?.streets?.length || ctx.geoBudget <= 0) {
@@ -676,7 +735,7 @@ async function geocodeLocation(ctx, location) {
           lat: geo.lat,
           lon: geo.lon,
           district: geo.district || null,
-          precision: geo.precision || 'street'
+          precision: normalizeGeoPrecision(geo.precision)
         });
       } else if (geo?.pending) {
         ctx.log(`wuppertal: geocoding pending: ${street}`);
@@ -688,20 +747,22 @@ async function geocodeLocation(ctx, location) {
 
   if (!points.length) return null;
 
+  // Если найдена только одна улица участка,
+  // используем её координаты, но отмечаем приблизительность.
   if (points.length === 1) {
     return {
       ...points[0],
-      precision: location.type === 'single'
-        ? points[0].precision
-        : 'approximate'
+      approximate: location.type !== 'single'
     };
   }
 
+  // Средняя точка между двумя улицами.
   return {
     lat: (points[0].lat + points[1].lat) / 2,
     lon: (points[0].lon + points[1].lon) / 2,
     district: points[0].district || points[1].district || null,
-    precision: 'approximate'
+    precision: 'street',
+    approximate: true
   };
 }
 
@@ -762,7 +823,8 @@ async function toEvent(ctx, item, analysis) {
     latitude: hasGeo ? geo.lat : null,
     longitude: hasGeo ? geo.lon : null,
 
-    geo_precision: hasGeo ? geo.precision : 'none',
+    // Только значения, разрешённые CHECK constraint в D1.
+    geo_precision: hasGeo ? normalizeGeoPrecision(geo.precision) : 'none',
 
     location_name:
       location.label ||
@@ -783,7 +845,7 @@ async function toEvent(ctx, item, analysis) {
       : 'official_city_traffic_press_release',
 
     confidence: hasGeo
-      ? geo.precision === 'approximate' ? 0.78 : 0.9
+      ? geo.approximate ? 0.78 : 0.9
       : 0.7,
 
     is_verified: 1
