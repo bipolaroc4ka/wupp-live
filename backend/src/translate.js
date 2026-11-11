@@ -6,9 +6,15 @@ const CHUNK = 400;
 const MAX_DESC = 1600;
 const PER_RUN = 6;
 
-// Типичные окончания немецких названий улиц и мест.
-const PLACE_PATTERN =
-  /\b(?:\p{Lu}[\p{L}\p{M}0-9.'’()-]*[ \t]+){0,3}\p{Lu}[\p{L}\p{M}0-9.'’()-]*(?:[Ss]traße|[Ss]tr\.|[Ww]eg|[Pp]latz|[Aa]llee|[Rr]ing|[Gg]asse|[Uu]fer|[Dd]amm|[Cc]haussee|[Ss]tieg|[Mm]arkt|[Bb]rücke)\b/gu;
+// Распространённые немецкие окончания названий улиц и мест.
+const STREET_SUFFIX =
+  '(?:straße|strasse|str\\.?|weg|platz|allee|ring|gasse|ufer|damm|chaussee|stieg|markt|brücke|bruecke|promenade|wall|stieg|höfe|hoefe)';
+
+// Находит названия с заглавной буквы, включая составные названия.
+const PLACE_PATTERN = new RegExp(
+  String.raw`\b(?:[\p{Lu}][\p{L}\p{M}0-9.'’()-]*[ \t]+){0,3}[\p{Lu}][\p{L}\p{M}0-9.'’()-]*${STREET_SUFFIX}(?=\b|[ \t.,;:!?]|$)`,
+  'gu'
+);
 
 export function textHash(title, description) {
   const s = `${title || ''}\u0000${description || ''}`;
@@ -58,21 +64,53 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Защищаем названия мест от машинного перевода.
+// Защищаем название и его сокращённые варианты.
+// Например: Feldstraße -> Feldstr.
+function makeLocationVariants(locationName) {
+  const name = String(locationName || '').trim();
+
+  if (!name) return [];
+
+  const variants = [name];
+
+  const suffixes = [
+    [/straße$/iu, ['str.', 'str', 'straße']],
+    [/strasse$/iu, ['str.', 'str', 'strasse']],
+    [/str\.?$/iu, ['straße', 'strasse', 'str.']],
+    [/platz$/iu, ['platz']],
+    [/weg$/iu, ['weg']],
+    [/allee$/iu, ['allee']],
+    [/ring$/iu, ['ring']],
+    [/gasse$/iu, ['gasse']],
+    [/ufer$/iu, ['ufer']],
+    [/damm$/iu, ['damm']]
+  ];
+
+  for (const [pattern, endings] of suffixes) {
+    if (!pattern.test(name)) continue;
+
+    const stem = name.replace(pattern, '');
+
+    for (const ending of endings) {
+      variants.push(stem + ending);
+    }
+  }
+
+  return [...new Set(variants)]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+}
+
 function protectPlaceNames(text, locationName = '') {
   const original = String(text || '');
   const candidates = [];
 
-  // 1. Название места, уже определённое системой.
-  if (locationName && locationName.trim()) {
-    candidates.push(locationName.trim());
-  }
+  // 1. Название места из базы данных и его сокращения.
+  candidates.push(...makeLocationVariants(locationName));
 
-  // 2. Автоматически распознаваемые немецкие названия.
-  const matches = original.match(PLACE_PATTERN) || [];
-  candidates.push(...matches);
+  // 2. Другие названия улиц, площадей и мест в тексте.
+  candidates.push(...(original.match(PLACE_PATTERN) || []));
 
-  // Сначала обрабатываем самые длинные совпадения.
   const unique = [...new Set(candidates)]
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
@@ -87,9 +125,7 @@ function protectPlaceNames(text, locationName = '') {
       'giu'
     );
 
-    if (!pattern.test(protectedText)) {
-      continue;
-    }
+    if (!pattern.test(protectedText)) continue;
 
     pattern.lastIndex = 0;
 
@@ -110,14 +146,13 @@ function protectPlaceNames(text, locationName = '') {
   };
 }
 
-// Возвращаем защищённые названия после перевода.
 function restorePlaceNames(text, replacements) {
   let result = text;
 
   for (const item of replacements) {
     if (!result.includes(item.marker)) {
       throw new Error(
-        `Модель изменила маркер защищённого названия: ${item.original}`
+        `Не удалось восстановить название: ${item.original}`
       );
     }
 
@@ -127,14 +162,8 @@ function restorePlaceNames(text, replacements) {
   return result;
 }
 
-async function translateText(
-  env,
-  text,
-  locationName = ''
-) {
-  if (!text || !String(text).trim()) {
-    return '';
-  }
+async function translateText(env, text, locationName = '') {
+  if (!text || !String(text).trim()) return '';
 
   const protectedResult = protectPlaceNames(
     text,
@@ -170,12 +199,8 @@ async function translateText(
     done.push(translated.trim());
   }
 
-  const translatedText = done.join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
   return restorePlaceNames(
-    translatedText,
+    done.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
     protectedResult.replacements
   );
 }
@@ -348,7 +373,6 @@ export async function translatePending(
     const saved = existing.get(event.id);
 
     if (!saved?.title) return true;
-
     if (saved.title.src_hash !== hash) return true;
 
     if (event.description) {
@@ -444,7 +468,7 @@ export async function loadTranslations(env, ids) {
       });
     }
   } catch {
-    // Переводы необязательны: API продолжает отдавать оригинал.
+    // При ошибке API продолжает отдавать оригинал.
   }
 
   return map;
