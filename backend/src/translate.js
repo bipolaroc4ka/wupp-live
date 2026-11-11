@@ -6,6 +6,10 @@ const CHUNK = 400;
 const MAX_DESC = 1600;
 const PER_RUN = 6;
 
+// Типичные окончания немецких названий улиц и мест.
+const PLACE_PATTERN =
+  /\b(?:\p{Lu}[\p{L}\p{M}0-9.'’()-]*[ \t]+){0,3}\p{Lu}[\p{L}\p{M}0-9.'’()-]*(?:[Ss]traße|[Ss]tr\.|[Ww]eg|[Pp]latz|[Aa]llee|[Rr]ing|[Gg]asse|[Uu]fer|[Dd]amm|[Cc]haussee|[Ss]tieg|[Mm]arkt|[Bb]rücke)\b/gu;
+
 export function textHash(title, description) {
   const s = `${title || ''}\u0000${description || ''}`;
 
@@ -50,8 +54,94 @@ export function chunkText(text, max = CHUNK) {
   return out;
 }
 
-async function translateText(env, text) {
-  const lines = chunkText(text);
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Защищаем названия мест от машинного перевода.
+function protectPlaceNames(text, locationName = '') {
+  const original = String(text || '');
+  const candidates = [];
+
+  // 1. Название места, уже определённое системой.
+  if (locationName && locationName.trim()) {
+    candidates.push(locationName.trim());
+  }
+
+  // 2. Автоматически распознаваемые немецкие названия.
+  const matches = original.match(PLACE_PATTERN) || [];
+  candidates.push(...matches);
+
+  // Сначала обрабатываем самые длинные совпадения.
+  const unique = [...new Set(candidates)]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  const replacements = [];
+  let protectedText = original;
+
+  for (const candidate of unique) {
+    const marker = `ZXQKEEP${replacements.length}XZQ`;
+    const pattern = new RegExp(
+      escapeRegExp(candidate),
+      'giu'
+    );
+
+    if (!pattern.test(protectedText)) {
+      continue;
+    }
+
+    pattern.lastIndex = 0;
+
+    protectedText = protectedText.replace(
+      pattern,
+      marker
+    );
+
+    replacements.push({
+      marker,
+      original: candidate
+    });
+  }
+
+  return {
+    text: protectedText,
+    replacements
+  };
+}
+
+// Возвращаем защищённые названия после перевода.
+function restorePlaceNames(text, replacements) {
+  let result = text;
+
+  for (const item of replacements) {
+    if (!result.includes(item.marker)) {
+      throw new Error(
+        `Модель изменила маркер защищённого названия: ${item.original}`
+      );
+    }
+
+    result = result.split(item.marker).join(item.original);
+  }
+
+  return result;
+}
+
+async function translateText(
+  env,
+  text,
+  locationName = ''
+) {
+  if (!text || !String(text).trim()) {
+    return '';
+  }
+
+  const protectedResult = protectPlaceNames(
+    text,
+    locationName
+  );
+
+  const lines = chunkText(protectedResult.text);
   const done = [];
 
   for (const piece of lines) {
@@ -80,9 +170,14 @@ async function translateText(env, text) {
     done.push(translated.trim());
   }
 
-  return done.join('\n')
+  const translatedText = done.join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+
+  return restorePlaceNames(
+    translatedText,
+    protectedResult.replacements
+  );
 }
 
 async function readTranslationRows(env, ids) {
@@ -208,7 +303,6 @@ async function saveTranslation(
     );
   }
 
-  // Обе записи сохраняются одной D1 batch-операцией.
   await env.DB.batch(statements);
 }
 
@@ -221,7 +315,7 @@ export async function translatePending(
   }
 
   const eventsResult = await env.DB.prepare(
-    `SELECT id, title, description
+    `SELECT id, title, description, location_name
      FROM events
      WHERE status IN ('LIVE', 'ACTIVE', 'RECENT')
      ORDER BY updated_at DESC
@@ -246,7 +340,11 @@ export async function translatePending(
   const existing = groupTranslationRows(rows);
 
   const todo = events.filter((event) => {
-    const hash = textHash(event.title, event.description);
+    const hash = textHash(
+      event.title,
+      event.description
+    );
+
     const saved = existing.get(event.id);
 
     if (!saved?.title) return true;
@@ -276,7 +374,8 @@ export async function translatePending(
 
       const translatedTitle = await translateText(
         env,
-        truncate(event.title, 300)
+        truncate(event.title, 300),
+        event.location_name
       );
 
       let translatedDescription = null;
@@ -284,7 +383,8 @@ export async function translatePending(
       if (event.description) {
         translatedDescription = await translateText(
           env,
-          truncate(event.description, MAX_DESC)
+          truncate(event.description, MAX_DESC),
+          event.location_name
         );
       }
 
@@ -329,7 +429,6 @@ export async function loadTranslations(env, ids) {
 
       if (!title) continue;
 
-      // Не показываем неполный или устаревший перевод.
       if (
         saved.description &&
         saved.description.src_hash !== title.src_hash
