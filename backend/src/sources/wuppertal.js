@@ -37,8 +37,13 @@ const STRONG_ROAD_KEYWORDS =
 const CLOSURE_KEYWORDS =
   /\b(vollsperrung|voll gesperrt|teilsperrung|halbseitige sperrung|gesperrt|sperrung|umleitung|nicht passierbar|für den verkehr gesperrt)\b/i;
 
+// Строительство, ремонт и физические работы на инфраструктуре.
+// Эти признаки имеют приоритет над общими упоминаниями помех движению.
+const ROADWORKS_KEYWORDS =
+  /\b(baustelle|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|fahrbahnschäden|fahrbahn|asphalt|straßensanierung|straßenbau|sanierung|sanieren|reparatur|repariert|erneuerung|erneuert|instandsetzung|instandsetzen|deckensanierung|pflasterarbeiten|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|gehwegsanierung|radwegsanierung|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|unterführung|tunnelarbeiten|stützmauer|stützwand)\b/i;
+
 const DISRUPTION_KEYWORDS =
-  /\b(verkehrsbehinderung|verkehrsführung|ampelarbeiten|ampelanlage|lichtsignalanlage|verkehrssicherung|fahrbahnschäden)\b/i;
+  /\b(verkehrsbehinderung|verkehrsführung|ampelarbeiten|ampelanlage|lichtsignalanlage|verkehrssicherung)\b/i;
 
 const INFRASTRUCTURE_KEYWORDS =
   /\b(brücke|brücken|tunnel|unterführung|treppe|treppen|geländer|stützmauer|stützwand|kanal|kanäle|gehweg|radweg)\b/i;
@@ -297,12 +302,6 @@ function extractStreetCandidates(text) {
  *
  * Сначала ограничивает область поиска концом предложения,
  * затем разделяет её по союзу und.
- *
- * Благодаря этому:
- * "zwischen Untenrohleder und Am Elisabetheim. Auf einer Fläche..."
- *
- * превращается в:
- * ["Untenrohleder", "Am Elisabetheim"]
  */
 function extractBetweenLocation(text) {
   const match = /\bzwischen\s+/i.exec(text);
@@ -321,7 +320,6 @@ function extractBetweenLocation(text) {
       : segment
   ).trim();
 
-  // Разделяем только по первому союзу und.
   const separator = /\s+und\s+/i.exec(clause);
 
   if (!separator) return null;
@@ -345,8 +343,6 @@ function extractBetweenLocation(text) {
     return null;
   }
 
-  // Не принимаем случайный фрагмент предложения
-  // в качестве названия второй улицы.
   if (
     !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(first) ||
     !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(second)
@@ -378,7 +374,6 @@ function extractLocation(text) {
     };
   }
 
-  // 1. Сначала пробуем разобрать участок между улицами.
   const between = extractBetweenLocation(text);
 
   if (between) {
@@ -395,7 +390,6 @@ function extractLocation(text) {
     };
   }
 
-  // 2. Перекрёстки.
   const intersectionMatch =
     /\b(kreuzung|kreuzungsbereich|ecke|einmündung|muendung|mündung|kreuzen sich)\b/i.exec(text);
 
@@ -435,7 +429,6 @@ function extractLocation(text) {
     }
   }
 
-  // 3. Одиночная улица.
   return {
     type: 'single',
     streets: [candidates[0].name],
@@ -624,17 +617,26 @@ function parseGermanDates(text, now) {
   return { start, end };
 }
 
+/**
+ * Классификация события.
+ *
+ * Важно: ремонт дорожного покрытия не должен становиться
+ * traffic_disruption только из-за слов Fahrbahnschäden или Asphalt.
+ */
 function classify(text) {
   if (CLOSURE_KEYWORDS.test(text)) {
     return 'road_closure';
   }
 
-  if (DISRUPTION_KEYWORDS.test(text)) {
-    return 'traffic_disruption';
+  if (
+    ROADWORKS_KEYWORDS.test(text) ||
+    INFRASTRUCTURE_KEYWORDS.test(text)
+  ) {
+    return 'roadworks';
   }
 
-  if (INFRASTRUCTURE_KEYWORDS.test(text)) {
-    return 'roadworks';
+  if (DISRUPTION_KEYWORDS.test(text)) {
+    return 'traffic_disruption';
   }
 
   return 'roadworks';
@@ -845,7 +847,7 @@ async function toEvent(ctx, item, analysis) {
       : 'official_city_traffic_press_release',
 
     confidence: hasGeo
-      ? geo.approximate ? 0.78 : 0.9
+      ? (geo.approximate ? 0.78 : 0.9)
       : 0.7,
 
     is_verified: 1
