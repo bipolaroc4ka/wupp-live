@@ -37,8 +37,6 @@ const STRONG_ROAD_KEYWORDS =
 const CLOSURE_KEYWORDS =
   /\b(vollsperrung|voll gesperrt|teilsperrung|halbseitige sperrung|gesperrt|sperrung|umleitung|nicht passierbar|für den verkehr gesperrt)\b/i;
 
-// Строительство, ремонт и физические работы на инфраструктуре.
-// Эти признаки имеют приоритет над общими упоминаниями помех движению.
 const ROADWORKS_KEYWORDS =
   /\b(baustelle|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|fahrbahnschäden|fahrbahn|asphalt|straßensanierung|straßenbau|sanierung|sanieren|reparatur|repariert|erneuerung|erneuert|instandsetzung|instandsetzen|deckensanierung|pflasterarbeiten|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|gehwegsanierung|radwegsanierung|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|unterführung|tunnelarbeiten|stützmauer|stützwand)\b/i;
 
@@ -48,7 +46,6 @@ const DISRUPTION_KEYWORDS =
 const INFRASTRUCTURE_KEYWORDS =
   /\b(brücke|brücken|tunnel|unterführung|treppe|treppen|geländer|stützmauer|stützwand|kanal|kanäle|gehweg|radweg)\b/i;
 
-// Служебные заголовки и навигационные элементы сайта.
 const BOILERPLATE_PATTERNS = [
   /^sie befinden sich hier\b/i,
   /^startseite$/i,
@@ -84,6 +81,9 @@ const MONTHS = {
   dezember: 11
 };
 
+const MONTH_PATTERN =
+  'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
+
 const WEEKDAYS =
   '(?:Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)';
 
@@ -101,14 +101,12 @@ function decodeHtml(value) {
     .replace(/&gt;/gi, '>')
     .replace(/&#(\d+);/g, (_, n) => {
       const code = Number(n);
-
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
     })
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
       const code = parseInt(n, 16);
-
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
@@ -178,7 +176,6 @@ function cleanDescription(value) {
 
 function parseFeed(xml) {
   const items = [];
-
   const re =
     /<(?:[\w.-]+:)?item\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?item\s*>/gi;
 
@@ -231,18 +228,6 @@ function parseFeed(xml) {
   return items;
 }
 
-/**
- * Ищет возможные названия улиц в тексте.
- *
- * Поддерживает:
- * Siebeneicker Straße
- * Friedrich-Engels-Allee
- * Am Unterbarmer Friedhof
- * Oberer Grifflenberg
- *
- * Точка не включается в название, чтобы не захватывать
- * начало следующего предложения.
- */
 function extractStreetCandidates(text) {
   if (!text) return [];
 
@@ -253,14 +238,10 @@ function extractStreetCandidates(text) {
       `\\b[A-ZÄÖÜ][\\p{L}\\d'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d'’\\-]*){0,4}\\s+${STREET_SUFFIX}\\b`,
       'gu'
     ),
-
     new RegExp(
       `\\b[A-ZÄÖÜ][\\p{L}\\d'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d'’]*)*${STREET_SUFFIX}\\b`,
       'gu'
     ),
-
-    // Названия с предлогами.
-    // Точка исключена из допустимых символов.
     /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
   ];
 
@@ -279,7 +260,6 @@ function extractStreetCandidates(text) {
     }
   }
 
-  // Убираем дубликаты, сохраняя порядок появления.
   const unique = new Map();
 
   for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
@@ -296,22 +276,12 @@ function extractStreetCandidates(text) {
   return [...unique.values()];
 }
 
-/**
- * Извлекает названия из конструкции:
- * zwischen X und Y
- *
- * Сначала ограничивает область поиска концом предложения,
- * затем разделяет её по союзу und.
- */
 function extractBetweenLocation(text) {
   const match = /\bzwischen\s+/i.exec(text);
 
   if (!match) return null;
 
-  const segment = text.slice(
-    match.index + match[0].length
-  );
-
+  const segment = text.slice(match.index + match[0].length);
   const sentenceEnd = segment.search(/[.!?;\n]/);
 
   const clause = (
@@ -357,14 +327,6 @@ function extractBetweenLocation(text) {
   };
 }
 
-/**
- * Определяет тип географической привязки.
- *
- * Приоритет:
- * 1. Участок между двумя улицами.
- * 2. Перекрёсток.
- * 3. Одиночная улица.
- */
 function extractLocation(text) {
   if (!text) {
     return {
@@ -376,9 +338,7 @@ function extractLocation(text) {
 
   const between = extractBetweenLocation(text);
 
-  if (between) {
-    return between;
-  }
+  if (between) return between;
 
   const candidates = extractStreetCandidates(text);
 
@@ -409,8 +369,6 @@ function extractLocation(text) {
     }
   }
 
-  // Перекрёсток без слова Kreuzung:
-  // Friedrich-Engels-Allee / Morianstraße.
   if (candidates.length >= 2) {
     const first = candidates[0];
     const second = candidates[1];
@@ -440,10 +398,51 @@ function extractStreet(text) {
   return extractLocation(text).streets[0] || null;
 }
 
+function makeDate(year, month, day) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(year, month, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function resolveYear(day, month, explicitYear, now) {
+  if (explicitYear) return explicitYear;
+
+  const current = new Date(now);
+  const currentYear = current.getUTCFullYear();
+
+  const candidate = makeDate(currentYear, month, day);
+
+  if (!candidate) return null;
+
+  // Если дата без года находится более чем на месяц в прошлом,
+  // предполагаем следующий календарный год.
+  if (candidate.getTime() < now - 31 * DAY) {
+    return currentYear + 1;
+  }
+
+  return currentYear;
+}
+
 function parseDateCandidate(match, now) {
   let day;
   let month;
-  let year;
+  let year = null;
 
   if (match[2] && match[3]) {
     day = Number(match[2]);
@@ -468,37 +467,15 @@ function parseDateCandidate(match, now) {
     return null;
   }
 
-  const current = new Date(now);
-  const currentYear = current.getUTCFullYear();
+  const resolvedYear = resolveYear(day, month, year, now);
 
-  if (!year) {
-    year = currentYear;
-
-    if (month < current.getUTCMonth() - 1) {
-      year++;
-    }
-  }
-
-  const date = new Date(Date.UTC(year, month, day));
-
-  if (
-    date.getUTCDate() !== day ||
-    date.getUTCMonth() !== month ||
-    date.getUTCFullYear() !== year
-  ) {
-    return null;
-  }
-
-  return date;
+  return makeDate(resolvedYear, month, day);
 }
 
 function parseEndOfMonth(text, now) {
-  const monthPattern =
-    'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
-
   const match = text.match(
     new RegExp(
-      `\\b(?:bis|voraussichtlich\\s+bis)\\s+Ende\\s+(${monthPattern})(?:\\s+(\\d{4}))?`,
+      `\\b(?:bis|voraussichtlich\\s+bis)\\s+(?:(?:etwa|ungefähr|ca\\.?|circa)\\s+)?Ende\\s+(${MONTH_PATTERN})(?:\\s+(\\d{4}))?`,
       'i'
     )
   );
@@ -512,9 +489,7 @@ function parseEndOfMonth(text, now) {
   const currentYear = new Date(now).getUTCFullYear();
   let year = match[2] ? Number(match[2]) : currentYear;
 
-  const currentMonth = new Date(now).getUTCMonth();
-
-  if (!match[2] && month < currentMonth - 1) {
+  if (!match[2] && month < new Date(now).getUTCMonth() - 1) {
     year++;
   }
 
@@ -522,107 +497,196 @@ function parseEndOfMonth(text, now) {
 }
 
 /**
- * Извлекает начало и окончание работ.
+ * Разбирает даты и определяет их назначение по контексту.
  *
  * Поддерживает:
  * ab Montag, 16. November
- * bis 4. Dezember
+ * am kommenden Montag, 16. November
+ * Heute, 9. November
  * vom 10.11.2026 bis 20.11.2026
- * voraussichtlich bis Ende Dezember
+ * bis etwa Ende Dezember
+ *
+ * Не использует первую найденную дату как начало автоматически.
  */
 function parseGermanDates(text, now) {
-  const monthPattern =
-    'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
+  const prefixPattern =
+    '(ab|seit|vom|von|bis(?:\\s+(?:etwa|ungefähr|ca\\.?|circa|zum))?|voraussichtlich\\s+bis)';
 
   const datePattern = new RegExp(
-    `(?:(ab|seit|vom|von|bis|voraussichtlich\\s+bis)\\s+)?(?:${WEEKDAYS}\\s*,?\\s*)?(\\d{1,2})\\.\\s*(${monthPattern})(?:\\s+(\\d{4}))?|\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})\\b`,
+    `(?:\\b${prefixPattern}\\s+)?(?:${WEEKDAYS}\\s*,?\\s*)?(?:(\\d{1,2})\\.\\s*(${MONTH_PATTERN})(?:\\s+(\\d{4}))?|\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})\\b)`,
     'gi'
   );
 
   const matches = [...text.matchAll(datePattern)]
-    .map((match) => ({
-      index: match.index,
-      prefix: (match[1] || '').toLowerCase().replace(/\s+/g, ' '),
-      date: parseDateCandidate(match, now)
-    }))
+    .map((match) => {
+      const date = parseDateCandidate(match, now);
+
+      return {
+        index: match.index,
+        endIndex: match.index + match[0].length,
+        raw: match[0],
+        prefix: (match[1] || '')
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim(),
+        date
+      };
+    })
     .filter((item) => item.date)
     .sort((a, b) => a.index - b.index);
 
+  const result = {
+    start: null,
+    end: null
+  };
+
   if (!matches.length) {
-    return {
-      start: null,
-      end: parseEndOfMonth(text, now)
-    };
+    result.end = parseEndOfMonth(text, now);
+    return result;
   }
 
-  const startMatch = matches.find(
-    (item) => ['ab', 'seit', 'vom', 'von'].includes(item.prefix)
-  );
+  const isStartContext = (item) => {
+    const before = text.slice(
+      Math.max(0, item.index - 100),
+      item.index
+    );
 
-  const endMatch = matches.find(
-    (item) =>
+    const after = text.slice(
+      item.endIndex,
+      Math.min(text.length, item.endIndex + 120)
+    );
+
+    if (/^(?:ab|seit|vom|von)$/.test(item.prefix)) {
+      return true;
+    }
+
+    if (
+      /\b(?:am\s+kommenden|am\s+nächsten|ab\s+dem|ab\s+kommenden|ab\s+nächsten|heute|morgen)\s*$/i.test(before)
+    ) {
+      return true;
+    }
+
+    if (
+      /\b(?:beginnt|beginnen|startet|starten|beginnen\s+die|starten\s+die|nimmt\s+...?\s+auf)\b/i.test(after)
+    ) {
+      return true;
+    }
+
+    if (
+      /\b(?:beginnt|beginnen|startet|starten|baubeginn|beginn\s+der\s+arbeiten)\b/i.test(before)
+    ) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const isEndContext = (item) => {
+    if (
       item.prefix === 'bis' ||
+      item.prefix === 'bis zum' ||
+      item.prefix.startsWith('bis ') ||
       item.prefix === 'voraussichtlich bis'
-  );
-
-  let start = startMatch?.date || null;
-  let end = endMatch?.date || null;
-
-  if (!start && !end) {
-    start = matches[0].date;
-
-    if (matches.length > 1) {
-      end = matches[matches.length - 1].date;
+    ) {
+      return true;
     }
-  } else if (!start && end) {
-    const previous = matches.filter(
-      (item) => item.index < endMatch.index
+
+    const before = text.slice(
+      Math.max(0, item.index - 100),
+      item.index
     );
 
-    if (previous.length) {
-      start = previous[previous.length - 1].date;
-    }
-  } else if (start && !end) {
-    const later = matches.filter(
-      (item) => item.index > startMatch.index
+    return /\b(?:enden|endeten|abgeschlossen|fertiggestellt|dauern|andauern|bis zum|bis etwa|bis voraussichtlich)\s*$/i.test(before);
+  };
+
+  // Сначала обрабатываем явно обозначенные даты начала.
+  const explicitStart = matches.find(isStartContext);
+
+  if (explicitStart) {
+    result.start = explicitStart.date;
+  }
+
+  // Затем — явно обозначенные даты окончания.
+  const explicitEnd = matches.find(isEndContext);
+
+  if (explicitEnd) {
+    result.end = explicitEnd.date;
+  }
+
+  // Если начало явно найдено, следующая более поздняя дата
+  // может быть окончанием только при наличии подходящего контекста.
+  if (result.start && !result.end) {
+    const laterEnd = matches.find(
+      (item) =>
+        item.date.getTime() >= result.start.getTime() &&
+        item.index > matches.find(isStartContext).index &&
+        isEndContext(item)
     );
 
-    const possibleEnd = later.find(
-      (item) => item.date.getTime() >= start.getTime()
-    );
-
-    if (possibleEnd) {
-      end = possibleEnd.date;
+    if (laterEnd) {
+      result.end = laterEnd.date;
     }
   }
 
-  if (!end) {
-    end = parseEndOfMonth(text, now);
-  }
+  // Для заголовков вида "Sanierung ... startet" дата в тексте
+  // может быть указана отдельно от глагола.
+  // Используем её только если дата одна и заголовок явно говорит о начале.
+  if (!result.start && matches.length === 1) {
+    const titleSignalsStart =
+      /\b(startet|starten|beginnt|beginnen|baubeginn|arbeiten\s+beginnen)\b/i.test(
+        text.slice(0, Math.min(text.length, 250))
+      );
 
-  if (start && end && end.getTime() < start.getTime()) {
-    const corrected = new Date(
-      Date.UTC(
-        end.getUTCFullYear() + 1,
-        end.getUTCMonth(),
-        end.getUTCDate()
-      )
-    );
+    const dateHasNoEndContext = !isEndContext(matches[0]);
 
-    if (corrected.getTime() >= start.getTime()) {
-      end = corrected;
+    if (titleSignalsStart && dateHasNoEndContext) {
+      result.start = matches[0].date;
     }
   }
 
-  return { start, end };
+  // Обрабатываем "Heute, 9. November, starten die Arbeiten".
+  // В этом случае дата находится перед глаголом.
+  if (!result.start) {
+    const todayStart = matches.find((item) => {
+      const before = text.slice(
+        Math.max(0, item.index - 35),
+        item.index
+      );
+
+      const after = text.slice(
+        item.endIndex,
+        Math.min(text.length, item.endIndex + 100)
+      );
+
+      return (
+        /\b(?:heute|morgen|am kommenden|am nächsten)\s*,?\s*$/i.test(before) &&
+        /\b(?:starten|beginnen|beginnt|startet)\b/i.test(after)
+      );
+    });
+
+    if (todayStart) {
+      result.start = todayStart.date;
+    }
+  }
+
+  // Если начало и окончание не удалось определить однозначно,
+  // не подставляем произвольные даты.
+  if (!result.end) {
+    result.end = parseEndOfMonth(text, now);
+  }
+
+  // Не допускаем окончание раньше начала.
+  if (
+    result.start &&
+    result.end &&
+    result.end.getTime() < result.start.getTime()
+  ) {
+    result.end = null;
+  }
+
+  return result;
 }
 
-/**
- * Классификация события.
- *
- * Важно: ремонт дорожного покрытия не должен становиться
- * traffic_disruption только из-за слов Fahrbahnschäden или Asphalt.
- */
 function classify(text) {
   if (CLOSURE_KEYWORDS.test(text)) {
     return 'road_closure';
@@ -691,10 +755,6 @@ function analyzeRoadItem(item) {
   };
 }
 
-/**
- * Нормализует precision к значениям, разрешённым схемой D1.
- * Значение approximate никогда не передаётся в geo_precision.
- */
 function normalizeGeoPrecision(value) {
   if (ALLOWED_GEO_PRECISIONS.has(value)) {
     return value;
@@ -703,16 +763,6 @@ function normalizeGeoPrecision(value) {
   return 'street';
 }
 
-/**
- * Геокодирует одну или несколько улиц.
- *
- * Для участков и перекрёстков:
- * - геокодирует каждую улицу отдельно;
- * - вычисляет среднюю точку;
- * - помечает результат как приблизительный отдельным флагом.
- *
- * Для одиночной улицы сохраняет точность геокодера.
- */
 async function geocodeLocation(ctx, location) {
   if (!location?.streets?.length || ctx.geoBudget <= 0) {
     return null;
@@ -749,8 +799,6 @@ async function geocodeLocation(ctx, location) {
 
   if (!points.length) return null;
 
-  // Если найдена только одна улица участка,
-  // используем её координаты, но отмечаем приблизительность.
   if (points.length === 1) {
     return {
       ...points[0],
@@ -758,7 +806,6 @@ async function geocodeLocation(ctx, location) {
     };
   }
 
-  // Средняя точка между двумя улицами.
   return {
     lat: (points[0].lat + points[1].lat) / 2,
     lon: (points[0].lon + points[1].lon) / 2,
@@ -825,8 +872,9 @@ async function toEvent(ctx, item, analysis) {
     latitude: hasGeo ? geo.lat : null,
     longitude: hasGeo ? geo.lon : null,
 
-    // Только значения, разрешённые CHECK constraint в D1.
-    geo_precision: hasGeo ? normalizeGeoPrecision(geo.precision) : 'none',
+    geo_precision: hasGeo
+      ? normalizeGeoPrecision(geo.precision)
+      : 'none',
 
     location_name:
       location.label ||
@@ -931,8 +979,6 @@ export async function run(ctx) {
     }
   }
 
-  // RSS — ограниченная лента последних сообщений.
-  // Не удаляем события, выпавшие из RSS.
   const stats = await syncSource(ctx, meta.id, events, {
     resolveMissing: false
   });
