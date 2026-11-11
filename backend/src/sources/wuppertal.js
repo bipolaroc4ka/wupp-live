@@ -21,7 +21,7 @@ const EVENT_TTL_DAYS = 30;
 const DAY = 86400000;
 
 const ROAD_KEYWORDS =
-  /\b(baustelle|baustellen|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|halbseitige sperrung|umleitung|verkehrsbehinderung|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|fahrbahnschäden|fahrbahn|straßensanierung|straßenbau|arbeitsstelle|ampelanlage|ampelarbeiten|lichtsignalanlage|gehwegsanierung|gehweg|radwegsanierung|radweg|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|deckensanierung|pflasterarbeiten|unterführung|tunnelarbeiten|verkehrsführung|verkehrssicherung)\b/i;
+  /\b(baustelle|baustellen|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|halbseitige sperrung|umleitung|verkehrsbehinderung|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|fahrbahnschäden|fahrbahn|straßensanierung|straßenbau|arbeitsstelle|ampelanlage|ampelarbeiten|lichtsignalanlage|gehwegsanierung|gehweg|radwegsanierung|radweg|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|deckensanierung|pflasterarbeiten|unterführung|tunnelarbeiten|verkehrsführung|verkehrssicherung|brücke|brücken|tunnel|stützmauer|stützwand)\b/i;
 
 const STRONG_ROAD_KEYWORDS =
   /\b(baustelle|baumaßnahme|bauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|umleitung|brückensanierung|brückenarbeiten|brückenbau|fahrbahnschäden|straßensanierung|straßenbau|arbeitsstelle|ampelarbeiten|lichtsignalanlage|gehwegsanierung|radwegsanierung|kanalsanierung|tiefbauarbeiten|deckensanierung)\b/i;
@@ -34,6 +34,27 @@ const DISRUPTION_KEYWORDS =
 
 const INFRASTRUCTURE_KEYWORDS =
   /\b(brücke|brücken|tunnel|unterführung|treppe|treppen|geländer|stützmauer|stützwand|kanal|kanäle|gehweg|radweg)\b/i;
+
+// Служебные заголовки и навигационные элементы сайта.
+const BOILERPLATE_PATTERNS = [
+  /^sie befinden sich hier\b/i,
+  /^startseite$/i,
+  /^navigation$/i,
+  /^hauptnavigation$/i,
+  /^menü$/i,
+  /^menu$/i,
+  /^zum inhalt$/i,
+  /^zum hauptinhalt$/i,
+  /^seitenanfang$/i,
+  /^breadcrumb/i,
+  /^suche$/i,
+  /^kontakt$/i,
+  /^impressum$/i,
+  /^datenschutz$/i
+];
+
+const BOILERPLATE_PREFIX =
+  /^\s*(?:sie befinden sich hier\s*:|breadcrumb\s*:|hauptnavigation\s*:|navigation\s*:)\s*/i;
 
 const MONTHS = {
   januar: 0,
@@ -53,6 +74,9 @@ const MONTHS = {
 const WEEKDAYS =
   '(?:Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)';
 
+const STREET_SUFFIX =
+  '(?:straße|strasse|str\\.?|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig|pfad|markt|wall|stieg|bogen|brücke|bruecke)';
+
 function decodeHtml(value) {
   return String(value || '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -64,12 +88,14 @@ function decodeHtml(value) {
     .replace(/&gt;/gi, '>')
     .replace(/&#(\d+);/g, (_, n) => {
       const code = Number(n);
+
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
     })
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
       const code = parseInt(n, 16);
+
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
@@ -107,9 +133,43 @@ function tagValue(xml, tag) {
   return xml.match(re)?.[1]?.trim() || '';
 }
 
+function isBoilerplateItem(item) {
+  const title = textOf(item.title || '').trim();
+
+  if (!title) return true;
+
+  if (BOILERPLATE_PATTERNS.some((pattern) => pattern.test(title))) {
+    return true;
+  }
+
+  // Не принимаем заголовки, состоящие только из навигационного текста.
+  if (
+    BOILERPLATE_PREFIX.test(title) &&
+    title.replace(BOILERPLATE_PREFIX, '').trim().length < 100
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function cleanDescription(value) {
+  let description = textOf(value);
+
+  // Удаляем навигационную строку, если она попала в начало описания.
+  description = description.replace(
+    /^\s*(?:sie befinden sich hier\s*:)[^\n]*(?:\n|$)/i,
+    ''
+  );
+
+  return description.trim();
+}
+
 function parseFeed(xml) {
   const items = [];
-  const re = /<(?:[\w.-]+:)?item\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?item\s*>/gi;
+
+  const re =
+    /<(?:[\w.-]+:)?item\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?item\s*>/gi;
 
   let match;
 
@@ -119,7 +179,7 @@ function parseFeed(xml) {
     const title = textOf(tagValue(block, 'title'));
     const link = textOf(tagValue(block, 'link'));
 
-    const description = textOf(
+    const description = cleanDescription(
       tagValue(block, 'description') ||
       tagValue(block, 'encoded')
     );
@@ -144,45 +204,173 @@ function parseFeed(xml) {
       continue;
     }
 
-    items.push({
+    const item = {
       title,
       description: truncate(description, 2200),
       url: url.href,
       guid,
       pubDate
-    });
+    };
+
+    // Отсекаем навигационные записи до геокодирования.
+    if (isBoilerplateItem(item)) continue;
+
+    items.push(item);
   }
 
   return items;
 }
 
 /**
- * Распознаёт названия улиц:
+ * Ищет все возможные названия улиц в тексте.
+ *
+ * Поддерживает:
  * Siebeneicker Straße
+ * Friedrich-Engels-Allee
  * Friedrich-Engels-Allee
  * Am Unterbarmer Friedhof
  * Oberer Grifflenberg
  */
-function extractStreet(text) {
-  if (!text) return null;
+function extractStreetCandidates(text) {
+  if (!text) return [];
+
+  const candidates = [];
 
   const patterns = [
-    /\b((?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,4})\b/u,
+    new RegExp(
+      `\\b[A-ZÄÖÜ][\\p{L}\\d.'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d.'’\\-]*){0,4}\\s+${STREET_SUFFIX}\\b`,
+      'gu'
+    ),
 
-    /\b([A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,4}\s+(?:straße|strasse|str\.|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig|pfad|markt))\b/iu,
+    new RegExp(
+      `\\b[A-ZÄÖÜ][\\p{L}\\d.'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d.'’]*)*${STREET_SUFFIX}\\b`,
+      'gu'
+    ),
 
-    /\b([A-ZÄÖÜ][\p{L}\d.-]*(?:straße|strasse|str\.|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig|pfad|markt))\b/iu
+    /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,3}/gu
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0]
+        .replace(/[.,;:]+$/, '')
+        .trim();
 
-    if (match) {
-      return match[1].trim();
+      if (value.length < 4 || value.length > 100) continue;
+
+      candidates.push({
+        name: value,
+        index: match.index
+      });
     }
   }
 
-  return null;
+  // Убираем дубликаты, сохраняя порядок появления в тексте.
+  const unique = new Map();
+
+  for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
+    const key = candidate.name
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!unique.has(key)) {
+      unique.set(key, candidate);
+    }
+  }
+
+  return [...unique.values()];
+}
+
+/**
+ * Определяет тип географической привязки:
+ *
+ * single:
+ *   Siebeneicker Straße
+ *
+ * intersection:
+ *   Kreuzung Friedrich-Engels-Allee / Morianstraße
+ *
+ * between:
+ *   zwischen Pahlkestraße und ... 
+ */
+function extractLocation(text) {
+  const candidates = extractStreetCandidates(text);
+
+  if (!candidates.length) {
+    return {
+      type: 'none',
+      streets: [],
+      label: null
+    };
+  }
+
+  const betweenMatch = /\bzwischen\b/i.exec(text);
+
+  if (betweenMatch) {
+    const after = candidates.filter(
+      (item) => item.index > betweenMatch.index
+    );
+
+    if (after.length >= 2) {
+      const streets = after.slice(0, 2).map((item) => item.name);
+
+      return {
+        type: 'between',
+        streets,
+        label: `zwischen ${streets[0]} und ${streets[1]}`
+      };
+    }
+  }
+
+  const intersectionMatch =
+    /\b(kreuzung|kreuzungsbereich|ecke|einmündung|muendung|mündung|kreuzen sich)\b/i.exec(text);
+
+  if (intersectionMatch) {
+    const after = candidates.filter(
+      (item) => item.index > intersectionMatch.index
+    );
+
+    if (after.length >= 2) {
+      const streets = after.slice(0, 2).map((item) => item.name);
+
+      return {
+        type: 'intersection',
+        streets,
+        label: `${streets[0]} / ${streets[1]}`
+      };
+    }
+  }
+
+  // Иногда перекрёсток записан без слова Kreuzung:
+  // Friedrich-Engels-Allee / Morianstraße.
+  if (candidates.length >= 2) {
+    const first = candidates[0];
+    const second = candidates[1];
+
+    const betweenText = text.slice(
+      first.index + first.name.length,
+      second.index
+    );
+
+    if (/^\s*(?:\/|&|und)\s*$/i.test(betweenText)) {
+      return {
+        type: 'intersection',
+        streets: [first.name, second.name],
+        label: `${first.name} / ${second.name}`
+      };
+    }
+  }
+
+  return {
+    type: 'single',
+    streets: [candidates[0].name],
+    label: candidates[0].name
+  };
+}
+
+function extractStreet(text) {
+  return extractLocation(text).streets[0] || null;
 }
 
 function parseDateCandidate(match, now) {
@@ -219,8 +407,6 @@ function parseDateCandidate(match, now) {
   if (!year) {
     year = currentYear;
 
-    // Если дата сильно раньше текущего месяца,
-    // вероятно, речь идёт о следующем календарном году.
     if (month < current.getUTCMonth() - 1) {
       year++;
     }
@@ -239,16 +425,43 @@ function parseDateCandidate(match, now) {
   return date;
 }
 
+function parseEndOfMonth(text, now) {
+  const monthPattern =
+    'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
+
+  const match = text.match(
+    new RegExp(
+      `\\b(?:bis|voraussichtlich\\s+bis)\\s+Ende\\s+(${monthPattern})(?:\\s+(\\d{4}))?`,
+      'i'
+    )
+  );
+
+  if (!match) return null;
+
+  const month = MONTHS[match[1].toLowerCase()];
+
+  if (!Number.isInteger(month)) return null;
+
+  const currentYear = new Date(now).getUTCFullYear();
+  let year = match[2] ? Number(match[2]) : currentYear;
+
+  const currentMonth = new Date(now).getUTCMonth();
+
+  if (!match[2] && month < currentMonth - 1) {
+    year++;
+  }
+
+  return new Date(Date.UTC(year, month + 1, 0));
+}
+
 /**
  * Извлекает начало и окончание работ.
  *
- * Примеры:
+ * Поддерживает:
  * ab Montag, 16. November
  * bis 4. Dezember
  * vom 10.11.2026 bis 20.11.2026
  * voraussichtlich bis Ende Dezember
- *
- * Даты без года интерпретируются относительно ctx.now.
  */
 function parseGermanDates(text, now) {
   const monthPattern =
@@ -269,7 +482,10 @@ function parseGermanDates(text, now) {
     .sort((a, b) => a.index - b.index);
 
   if (!matches.length) {
-    return { start: null, end: null };
+    return {
+      start: null,
+      end: parseEndOfMonth(text, now)
+    };
   }
 
   const startMatch = matches.find(
@@ -277,7 +493,8 @@ function parseGermanDates(text, now) {
   );
 
   const endMatch = matches.find(
-    (item) => item.prefix === 'bis' ||
+    (item) =>
+      item.prefix === 'bis' ||
       item.prefix === 'voraussichtlich bis'
   );
 
@@ -312,8 +529,10 @@ function parseGermanDates(text, now) {
     }
   }
 
-  // Если год окончания не указан и дата окончания
-  // оказалась раньше начала, переносим её на следующий год.
+  if (!end) {
+    end = parseEndOfMonth(text, now);
+  }
+
   if (start && end && end.getTime() < start.getTime()) {
     const corrected = new Date(
       Date.UTC(
@@ -347,46 +566,42 @@ function classify(text) {
   return 'roadworks';
 }
 
-/**
- * Не считаем любое упоминание слова Verkehr дорожным событием.
- * Требуем конкретный дорожный признак и географическую привязку.
- */
 function analyzeRoadItem(item) {
   const text = `${item.title} ${item.description}`;
-
   const hasRoadKeyword = ROAD_KEYWORDS.test(text);
   const hasStrongKeyword = STRONG_ROAD_KEYWORDS.test(text);
-  const street = extractStreet(text);
+  const location = extractLocation(text);
 
   if (!hasRoadKeyword) {
     return {
       accepted: false,
       reason: 'no_road_keyword',
-      street,
+      street: null,
+      location,
       category: null
     };
   }
 
-  if (!street && !hasStrongKeyword) {
+  if (!location.streets.length && !hasStrongKeyword) {
     return {
       accepted: false,
       reason: 'no_clear_road_context',
       street: null,
+      location,
       category: null
     };
   }
 
-  // Не принимаем общие сообщения о транспорте,
-  // если в них нет конкретной дорожной темы.
   if (
     /\bverkehr\b/i.test(text) &&
     !hasStrongKeyword &&
-    !street
+    !location.streets.length
   ) {
     return {
       accepted: false,
       reason: 'generic_traffic_mention',
       street: null,
+      location,
       category: null
     };
   }
@@ -394,8 +609,68 @@ function analyzeRoadItem(item) {
   return {
     accepted: true,
     reason: 'road_event_detected',
-    street,
+    street: location.streets[0] || null,
+    location,
     category: classify(text)
+  };
+}
+
+/**
+ * Геокодирует одну или несколько улиц.
+ *
+ * Для перекрёстков и участков вычисляет приблизительный
+ * центр между найденными точками.
+ */
+async function geocodeLocation(ctx, location) {
+  if (!location?.streets?.length || ctx.geoBudget <= 0) {
+    return null;
+  }
+
+  const points = [];
+
+  for (const street of location.streets.slice(0, 2)) {
+    if (ctx.geoBudget <= 0) break;
+
+    try {
+      const geo = await geocodeStreet(ctx, street);
+
+      if (
+        geo &&
+        !geo.pending &&
+        Number.isFinite(geo.lat) &&
+        Number.isFinite(geo.lon) &&
+        inCityBbox(geo.lat, geo.lon)
+      ) {
+        points.push({
+          lat: geo.lat,
+          lon: geo.lon,
+          district: geo.district || null,
+          precision: geo.precision || 'street'
+        });
+      } else if (geo?.pending) {
+        ctx.log(`wuppertal: geocoding pending: ${street}`);
+      }
+    } catch (error) {
+      ctx.log(`wuppertal geocode ${street}: ${error.message}`);
+    }
+  }
+
+  if (!points.length) return null;
+
+  if (points.length === 1) {
+    return {
+      ...points[0],
+      precision: location.type === 'single'
+        ? points[0].precision
+        : 'approximate'
+    };
+  }
+
+  return {
+    lat: (points[0].lat + points[1].lat) / 2,
+    lon: (points[0].lon + points[1].lon) / 2,
+    district: points[0].district || points[1].district || null,
+    precision: 'approximate'
   };
 }
 
@@ -415,32 +690,18 @@ async function toEvent(ctx, item, analysis) {
     return null;
   }
 
-  const street = analysis.street;
-  let geo = null;
+  const location = analysis.location;
 
-  if (street && ctx.geoBudget > 0) {
-    try {
-      geo = await geocodeStreet(ctx, street);
-
-      if (geo?.pending) {
-        ctx.log(`wuppertal: geocoding pending: ${street}`);
-      }
-    } catch (error) {
-      ctx.log(`wuppertal geocode ${street}: ${error.message}`);
-    }
-  }
+  const geo = await geocodeLocation(ctx, location);
 
   const hasGeo =
     geo &&
-    !geo.pending &&
     Number.isFinite(geo.lat) &&
     Number.isFinite(geo.lon) &&
     inCityBbox(geo.lat, geo.lon);
 
   const { start, end } = parseGermanDates(text, ctx.now);
 
-  // Если дата окончания уже прошла, публикация не должна
-  // снова появляться на карте как действующая работа.
   if (end && end.getTime() + 2 * DAY < ctx.now) {
     return null;
   }
@@ -467,20 +728,34 @@ async function toEvent(ctx, item, analysis) {
     description: item.description || null,
     category: analysis.category,
     source_url: item.url,
+
     latitude: hasGeo ? geo.lat : null,
     longitude: hasGeo ? geo.lon : null,
+
     geo_precision: hasGeo ? geo.precision : 'none',
-    location_name: street || item.title,
+
+    location_name:
+      location.label ||
+      item.title,
+
     district: hasGeo ? geo.district || null : null,
+
     event_time: start ? ISO(start.getTime()) : null,
     time_precision: start ? 'day' : 'unknown',
+
     published_at: publishedAt,
     expires_at: ISO(expiresAt),
+
     status: isScheduled ? 'ACTIVE' : 'RECENT',
+
     status_reason: isScheduled
       ? 'official_city_scheduled_roadwork'
       : 'official_city_traffic_press_release',
-    confidence: hasGeo ? 0.9 : 0.7,
+
+    confidence: hasGeo
+      ? geo.precision === 'approximate' ? 0.78 : 0.9
+      : 0.7,
+
     is_verified: 1
   };
 }
@@ -518,6 +793,15 @@ function analyzeFeed(items) {
   const rejected = [];
 
   for (const item of items) {
+    if (isBoilerplateItem(item)) {
+      rejected.push({
+        title: item.title,
+        reason: 'boilerplate'
+      });
+
+      continue;
+    }
+
     const analysis = analyzeRoadItem(item);
 
     if (analysis.accepted) {
@@ -561,21 +845,29 @@ export async function run(ctx) {
 
   return {
     ...stats,
+
     rss_items: feedItems.length,
     road_items: accepted.length,
     rejected_items: rejected.length,
     events_created_or_updated: events.length,
+
     geocoded: events.filter(
       (event) =>
         event.geo_precision &&
         event.geo_precision !== 'none'
     ).length,
+
     without_coordinates: events.filter(
-      (event) => !event.latitude || !event.longitude
+      (event) =>
+        event.latitude === null ||
+        event.longitude === null
     ).length,
+
     sample: accepted.slice(0, 5).map(({ item, analysis }) => ({
       title: item.title,
       street: analysis.street,
+      location_type: analysis.location.type,
+      location: analysis.location.label,
       category: analysis.category,
       url: item.url
     }))
@@ -602,18 +894,25 @@ export async function probe() {
   return {
     url: FEED_URL,
     status: 200,
+
     rss_items: items.length,
     recent_items: recent.length,
     road_items: accepted.length,
     rejected_items: rejected.length,
+
     road_samples: accepted.slice(0, 10).map(({ item, analysis }) => ({
       title: item.title,
       description: truncate(item.description, 500),
+
       street: analysis.street,
+      location_type: analysis.location.type,
+      location: analysis.location.label,
+
       category: analysis.category,
       pubDate: item.pubDate,
       url: item.url
     })),
-    rejected_samples: rejected.slice(0, 5)
+
+    rejected_samples: rejected.slice(0, 10)
   };
 }
