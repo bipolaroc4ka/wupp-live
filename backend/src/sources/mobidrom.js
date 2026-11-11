@@ -1,5 +1,5 @@
 
-import { CITY, inCityBbox } from '../config.js';
+import { inCityBbox } from '../config.js';
 import { fetchWithRetry, ISO, truncate, shortId } from '../util.js';
 import { geocodeStreet } from '../geo.js';
 import { syncSource } from '../events.js';
@@ -20,6 +20,14 @@ const DAY = 86400000;
 const EVENT_TTL_DAYS = 14;
 const MAX_FUTURE_DAYS = 30;
 
+const ALLOWED_GEO_PRECISIONS = new Set([
+  'source',
+  'street',
+  'district',
+  'city',
+  'none'
+]);
+
 function decodeXml(value) {
   return String(value || '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -28,14 +36,16 @@ function decodeXml(value) {
     .replace(/&apos;|&#39;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, n) => {
-      const code = Number(n);
+    .replace(/&#(\d+);/g, (_, value) => {
+      const code = Number(value);
+
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
     })
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
-      const code = parseInt(n, 16);
+    .replace(/&#x([0-9a-f]+);/gi, (_, value) => {
+      const code = parseInt(value, 16);
+
       return code >= 0 && code <= 0x10ffff
         ? String.fromCodePoint(code)
         : '';
@@ -51,7 +61,7 @@ function cleanText(value) {
 }
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function tagValues(xml, tag) {
@@ -70,6 +80,7 @@ function tagValues(xml, tag) {
 function firstTag(xml, names) {
   for (const name of names) {
     const values = tagValues(xml, name);
+
     if (values.length) return values[0];
   }
 
@@ -95,7 +106,7 @@ function attributeValue(attributes, names) {
 
     const match = attributes.match(
       new RegExp(
-        `(?:^|\\s)${escaped}\\s*=\\s*["']([^"']+)["']`,
+        `(?:^|\\s)${escaped}\\s*=\\s*["']([^"']*)["']`,
         'i'
       )
     );
@@ -131,30 +142,39 @@ function elementId(block, name) {
   return attributeValue(attributes, ['id', 'recordId']);
 }
 
-function inValidCoordinateRange(lat, lon) {
+function normalizeGeoPrecision(value, fallback = 'street') {
+  if (ALLOWED_GEO_PRECISIONS.has(value)) {
+    return value;
+  }
+
+  return fallback;
+}
+
+function validPoint(lat, lon) {
   return (
     Number.isFinite(lat) &&
     Number.isFinite(lon) &&
     lat >= -90 &&
     lat <= 90 &&
     lon >= -180 &&
-    lon <= 180
+    lon <= 180 &&
+    inCityBbox(lat, lon)
   );
 }
 
 /**
- * DATEX II GML posList обычно содержит последовательность пар:
- * latitude longitude.
+ * DATEX II GML posList обычно содержит пары координат.
  *
- * У разных поставщиков возможен другой порядок.
- * Поэтому проверяем оба варианта по границам Wuppertal.
+ * Порядок координат может различаться у поставщиков.
+ * Проверяем оба варианта и оставляем только точки
+ * внутри географических границ Wuppertal.
  */
 function parsePositionPairs(value) {
   const numbers = String(value || '')
     .trim()
     .split(/[\s,;]+/)
-    .map(Number)
-    .filter(Number.isFinite);
+    .filter(Boolean)
+    .map(Number);
 
   const points = [];
 
@@ -162,15 +182,17 @@ function parsePositionPairs(value) {
     const a = numbers[i];
     const b = numbers[i + 1];
 
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      continue;
+    }
+
     const candidates = [
       { lat: a, lon: b },
       { lat: b, lon: a }
     ];
 
     const point = candidates.find(
-      (candidate) =>
-        inValidCoordinateRange(candidate.lat, candidate.lon) &&
-        inCityBbox(candidate.lat, candidate.lon)
+      (candidate) => validPoint(candidate.lat, candidate.lon)
     );
 
     if (point) points.push(point);
@@ -190,7 +212,7 @@ function coordinates(block) {
     points.push(...parsePositionPairs(value));
   }
 
-  // Убираем повторяющиеся вершины.
+  // Удаляем повторяющиеся вершины.
   const unique = [
     ...new Map(
       points.map((point) => [
@@ -202,8 +224,7 @@ function coordinates(block) {
 
   if (!unique.length) return null;
 
-  // Для одной точки на карте используем центр геометрии,
-  // а не первую вершину дорожного участка.
+  // Центр геометрии дорожного участка.
   const lat =
     unique.reduce((sum, point) => sum + point.lat, 0) /
     unique.length;
@@ -212,6 +233,10 @@ function coordinates(block) {
     unique.reduce((sum, point) => sum + point.lon, 0) /
     unique.length;
 
+  if (!validPoint(lat, lon)) {
+    return unique[0];
+  }
+
   return { lat, lon };
 }
 
@@ -219,6 +244,7 @@ function parseDate(value) {
   if (!value) return null;
 
   const ms = Date.parse(value);
+
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -232,21 +258,45 @@ function extractStreet(text) {
 
   for (const pattern of patterns) {
     const match = text.match(pattern);
+
     if (match) return match[1].trim();
   }
 
   return null;
 }
 
-function classify(text) {
+function classify(text, recordTypes = []) {
+  const value = String(text || '');
+
+  // Полное перекрытие или явно указанная блокировка дороги.
   if (
     /\b(vollsperrung|voll gesperrt|gesperrt|sperrung|umleitung|closed|closed road|road closed)\b/i.test(
-      text
+      value
     )
   ) {
     return 'road_closure';
   }
 
+  // DATEX II типы, явно связанные с дорожными работами.
+  if (
+    recordTypes.some((type) =>
+      /MaintenanceWorks|ConstructionWorks/i.test(type)
+    )
+  ) {
+    return 'roadworks';
+  }
+
+  // Тексты о строительстве, ремонте и обслуживании дорог.
+  if (
+    /\b(baustelle|bauarbeiten|bauabschnitt|sanierung|erneuerung|reparatur|instandsetzung|fahrbahnsanierung|straßenbau|strassenbau|kanalarbeiten|brückenarbeiten|brueckenarbeiten|markierungsarbeiten|arbeitsstelle)\b/i.test(
+      value
+    )
+  ) {
+    return 'roadworks';
+  }
+
+  // Остальные записи этого фида относятся к дорожным работам
+  // или связанным с ними ограничениям.
   return 'roadworks';
 }
 
@@ -327,15 +377,22 @@ function parseRecord(block) {
 }
 
 function typePriority(type) {
-  if (/MaintenanceWorks|ConstructionWorks/i.test(type)) return 3;
-  if (/RoadOrCarriagewayOrLaneManagement/i.test(type)) return 1;
+  if (/MaintenanceWorks|ConstructionWorks/i.test(type)) {
+    return 3;
+  }
+
+  if (/RoadOrCarriagewayOrLaneManagement/i.test(type)) {
+    return 1;
+  }
+
   return 2;
 }
 
 /**
  * Объединяет все situationRecord внутри одной DATEX II situation.
+ *
  * Одна дорожная ситуация может содержать несколько связанных
- * записей и геометрий.
+ * записей и геометрий. На карту отправляем одно событие.
  */
 function parseSituation(block) {
   const records = recordBlocks(block)
@@ -390,14 +447,14 @@ function parseSituation(block) {
 
   if (points.length) {
     const lat =
-      points.reduce((sum, p) => sum + p.lat, 0) /
+      points.reduce((sum, item) => sum + item.lat, 0) /
       points.length;
 
     const lon =
-      points.reduce((sum, p) => sum + p.lon, 0) /
+      points.reduce((sum, item) => sum + item.lon, 0) /
       points.length;
 
-    if (inCityBbox(lat, lon)) {
+    if (validPoint(lat, lon)) {
       point = { lat, lon };
     } else {
       // Если средняя точка вышла за границы города,
@@ -414,8 +471,13 @@ function parseSituation(block) {
     .map((record) => record.end)
     .filter(Number.isFinite);
 
-  const start = starts.length ? Math.min(...starts) : null;
-  const end = ends.length ? Math.max(...ends) : null;
+  const start = starts.length
+    ? Math.min(...starts)
+    : null;
+
+  const end = ends.length
+    ? Math.max(...ends)
+    : null;
 
   const situationId = elementId(block, 'situation');
 
@@ -453,8 +515,11 @@ async function makeEvent(ctx, situation) {
   let point = situation.coordinates;
   let precision = point ? 'source' : 'none';
   let district = null;
+  let geocoded = false;
 
-  // Геокодируем только явно относящиеся к Wuppertal записи.
+  // Геометрия DATEX II имеет приоритет.
+  // Геокодируем только записи без координат,
+  // в тексте которых явно указан Wuppertal.
   if (!point && /\bWuppertal\b/i.test(text)) {
     const street =
       situation.street ||
@@ -469,11 +534,22 @@ async function makeEvent(ctx, situation) {
           !geo.pending &&
           Number.isFinite(geo.lat) &&
           Number.isFinite(geo.lon) &&
-          inCityBbox(geo.lat, geo.lon)
+          validPoint(geo.lat, geo.lon)
         ) {
-          point = { lat: geo.lat, lon: geo.lon };
-          precision = geo.precision;
+          point = {
+            lat: geo.lat,
+            lon: geo.lon
+          };
+
+          // Не допускаем невалидные значения из геокодера
+          // в колонку geo_precision.
+          precision = normalizeGeoPrecision(
+            geo.precision,
+            'street'
+          );
+
           district = geo.district || null;
+          geocoded = true;
         }
       } catch (error) {
         ctx.log(`mobidrom geocode ${street}: ${error.message}`);
@@ -481,10 +557,14 @@ async function makeEvent(ctx, situation) {
     }
   }
 
-  if (!point) return null;
+  if (!point || !validPoint(point.lat, point.lon)) {
+    return null;
+  }
 
-  // События, завершившиеся до текущего времени, не публикуем.
-  if (situation.end && situation.end < ctx.now) return null;
+  // Не публикуем события, завершившиеся до текущего времени.
+  if (situation.end && situation.end < ctx.now) {
+    return null;
+  }
 
   // Не берём слишком далёкие будущие работы.
   if (
@@ -508,6 +588,8 @@ async function makeEvent(ctx, situation) {
     startExpiry
   );
 
+  // Стабильный ID родительской DATEX II situation.
+  // Не используем случайные значения или координаты.
   const stableId =
     situation.id ||
     [
@@ -517,7 +599,18 @@ async function makeEvent(ctx, situation) {
     ].join('|');
 
   const isScheduled =
-    situation.start && situation.start > ctx.now;
+    Boolean(situation.start && situation.start > ctx.now);
+
+  const category = classify(
+    text,
+    situation.recordTypes
+  );
+
+  const confidence = geocoded
+    ? 0.68
+    : precision === 'source'
+      ? 0.9
+      : 0.65;
 
   return {
     source_event_id: await shortId(stableId),
@@ -525,7 +618,7 @@ async function makeEvent(ctx, situation) {
     publisher: 'NRW.Mobidrom / Straßen.NRW',
     title: situation.title,
     description: situation.description || null,
-    category: classify(text),
+    category,
     source_url: FEED_URL,
     latitude: point.lat,
     longitude: point.lon,
@@ -539,21 +632,25 @@ async function makeEvent(ctx, situation) {
     event_time: situation.start
       ? ISO(situation.start)
       : null,
-    time_precision: situation.start ? 'minute' : 'unknown',
+    time_precision: situation.start
+      ? 'minute'
+      : 'unknown',
     published_at: null,
     expires_at: ISO(expiresAt),
     status: 'ACTIVE',
     status_reason: isScheduled
       ? 'scheduled_in_mobidrom_datex_feed'
       : 'listed_in_mobidrom_datex_feed',
-    confidence: precision === 'source' ? 0.9 : 0.65,
+    confidence,
     is_verified: 1
   };
 }
 
 function parseFeed(xml) {
   if (!/<(?:[\w.-]+:)?d2LogicalModel\b/i.test(xml)) {
-    throw new Error('Mobidrom returned unexpected DATEX II XML');
+    throw new Error(
+      'Mobidrom returned unexpected DATEX II XML'
+    );
   }
 
   const situations = situationBlocks(xml);
@@ -598,7 +695,9 @@ async function fetchFeed() {
   const xml = await response.text();
 
   if (!xml || xml.length < 1000) {
-    throw new Error('Mobidrom returned an unexpectedly small XML feed');
+    throw new Error(
+      'Mobidrom returned an unexpectedly small XML feed'
+    );
   }
 
   return xml;
@@ -606,7 +705,11 @@ async function fetchFeed() {
 
 export async function run(ctx) {
   const xml = await fetchFeed();
-  const { situations, parsed } = parseFeed(xml);
+
+  const {
+    situations,
+    parsed
+  } = parseFeed(xml);
 
   const withCoordinates = parsed.filter(
     (item) => item.coordinates
@@ -622,12 +725,14 @@ export async function run(ctx) {
 
   for (const situation of parsed) {
     const event = await makeEvent(ctx, situation);
+
     if (event) events.push(event);
   }
 
   // Не разрешаем отсутствующие записи автоматически:
-  // часть DATEX II ситуаций может не иметь геометрии или
-  // временно не распознаваться парсером.
+  // DATEX II ситуации могут временно не иметь геометрии
+  // или не распознаваться парсером.
+  //
   // Завершение работ обрабатывается через expires_at.
   const stats = await syncSource(ctx, meta.id, events, {
     resolveMissing: false
@@ -638,7 +743,8 @@ export async function run(ctx) {
     datex_situations: situations.length,
     parsed_situations: parsed.length,
     situations_with_coordinates: withCoordinates,
-    situations_without_coordinates: parsed.length - withCoordinates,
+    situations_without_coordinates:
+      parsed.length - withCoordinates,
     wuppertal_events: events.length,
     grouped_records: parsed.reduce(
       (sum, item) => sum + item.recordCount,
@@ -649,7 +755,11 @@ export async function run(ctx) {
 
 export async function probe() {
   const xml = await fetchFeed();
-  const { situations, parsed } = parseFeed(xml);
+
+  const {
+    situations,
+    parsed
+  } = parseFeed(xml);
 
   const withCoordinates = parsed.filter(
     (item) => item.coordinates
