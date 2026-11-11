@@ -1,156 +1,1588 @@
+
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0b1018">
   <title>Wuppertal Live — Admin</title>
+
   <style>
-    :root { --bg:#0b0f14; --panel:#121821; --line:#263040; --text:#e8edf3; --muted:#93a1b3; --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --accent:#4da3ff; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b1018;
+      --panel: #121a26;
+      --panel2: #172231;
+      --line: #263548;
+      --text: #e8eef7;
+      --muted: #91a0b4;
+      --blue: #5aa9ff;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #fb7185;
+      --radius: 12px;
+    }
+
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; padding: 16px; max-width: 1100px; margin-inline: auto; }
-    h1 { font-size: 20px; margin: 0 0 12px; } h2 { font-size: 15px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-    input, select, button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
-    button { cursor: pointer; } button:hover { border-color: var(--accent); }
-    button.danger:hover { border-color: var(--bad); color: var(--bad); }
-    .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .bar input[type=password] { flex: 1; min-width: 220px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--muted); font-weight: 500; }
-    .wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-    .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
-    pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 300px; white-space: pre-wrap; word-break: break-all; }
-    .tags span { display: inline-block; margin: 0 8px 4px 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
-    #msg { margin: 10px 0; min-height: 20px; }
+
+    body {
+      margin: 0 auto;
+      padding: 22px;
+      max-width: 1500px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, sans-serif;
+    }
+
+    button, input, select {
+      font: inherit;
+      color: inherit;
+    }
+
+    button, input, select {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 9px 11px;
+    }
+
+    button {
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+
+    button:hover { border-color: var(--blue); }
+    button:disabled { opacity: .5; cursor: wait; }
+    button.primary { background: #17385a; border-color: #285b8e; }
+    button.danger:hover { border-color: var(--red); color: var(--red); }
+
+    input:focus, select:focus {
+      outline: 1px solid var(--blue);
+      border-color: var(--blue);
+    }
+
+    h1 { font-size: 23px; margin: 0; }
+    h2 { font-size: 17px; margin: 0 0 14px; }
+    h3 { font-size: 14px; margin: 0 0 8px; }
+
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .green { color: var(--green); }
+    .yellow { color: var(--yellow); }
+    .red { color: var(--red); }
+    .blue { color: var(--blue); }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .subtitle { color: var(--muted); margin-top: 4px; }
+
+    .login {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .login input {
+      flex: 1;
+      min-width: 220px;
+    }
+
+    #message {
+      min-height: 22px;
+      margin: 10px 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .nav {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      margin: 20px 0;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+
+    .nav button { background: transparent; }
+    .nav button.active {
+      background: #17385a;
+      border-color: #285b8e;
+      color: white;
+    }
+
+    .view[hidden] { display: none; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 15px;
+      min-width: 0;
+    }
+
+    .card-label { color: var(--muted); font-size: 12px; }
+    .card-value { font-size: 27px; font-weight: 700; margin-top: 5px; }
+    .card-note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+      min-width: 0;
+    }
+
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .bar input[type="search"] {
+      flex: 1;
+      min-width: 180px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      min-width: 650px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      background: var(--panel2);
+      white-space: nowrap;
+    }
+
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: rgba(255,255,255,.025); }
+
+    .tag {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      padding: 3px 8px;
+      font-size: 11px;
+      margin: 2px 4px 2px 0;
+      white-space: nowrap;
+    }
+
+    .tag.ok { color: var(--green); border-color: #23644e; }
+    .tag.warn { color: var(--yellow); border-color: #6a5420; }
+    .tag.bad { color: var(--red); border-color: #713344; }
+    .tag.info { color: var(--blue); border-color: #285b8e; }
+
+    .source-name { font-weight: 650; }
+    .source-id { color: var(--muted); font-size: 11px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 5px; }
+    .actions button { padding: 6px 8px; font-size: 12px; }
+
+    .json {
+      background: #080d14;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 12px;
+      overflow: auto;
+      max-height: 420px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 12px/1.5 ui-monospace, monospace;
+    }
+
+    .probe-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .probe-summary > div {
+      background: var(--panel2);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .probe-summary strong { display: block; font-size: 18px; }
+    .probe-summary span { color: var(--muted); font-size: 11px; }
+
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 25px;
+    }
+
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    details summary { cursor: pointer; color: var(--blue); }
+    details pre { margin-top: 8px; }
+
+    .field-label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: 1.5fr repeat(4, minmax(130px, 1fr)) auto;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .filter-grid input, .filter-grid select { width: 100%; min-width: 0; }
+
+    .footer {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 22px;
+      text-align: right;
+    }
+
+    @media (max-width: 900px) {
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filter-grid input { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 560px) {
+      body { padding: 13px; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .card { padding: 11px; }
+      .card-value { font-size: 22px; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .probe-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filter-grid { grid-template-columns: 1fr 1fr; }
+      .filter-grid input { grid-column: 1 / -1; }
+    }
   </style>
 </head>
+
 <body>
-  <h1>Wuppertal Live — администрирование</h1>
-  <p class="muted">Токен хранится только в этой вкладке (sessionStorage) и отправляется на ваш Worker. Секреты в frontend не хранятся.</p>
-  <div class="bar">
-    <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off">
-    <button id="login" type="button">Войти</button>
-    <button id="refresh" type="button">Обновить</button>
-  </div>
-  <div id="msg" role="status"></div>
-
-  <div id="app" hidden>
-    <h2>Статистика</h2>
-    <div class="tags" id="stats"></div>
-
-    <h2>Источники</h2>
-    <div class="wrap"><table id="srcTable"></table></div>
-    <pre id="probe" hidden></pre>
-
-    <h2>События</h2>
-    <div class="bar" style="margin-bottom:8px">
-      <select id="fStatus"><option value="">все статусы</option><option>LIVE</option><option>ACTIVE</option><option>RECENT</option><option>EXPIRED</option><option>RESOLVED</option></select>
-      <select id="fSource"><option value="">все источники</option><option>autobahn</option><option>nina</option><option>presseportal</option></select>
-      <button id="loadEvents" type="button">Показать</button>
+  <header class="header">
+    <div>
+      <h1>Wuppertal Live</h1>
+      <div class="subtitle">Панель управления и диагностики</div>
     </div>
-    <div class="wrap"><table id="evTable"></table></div>
+    <div class="bar">
+      <span id="connection" class="tag warn">Не подключено</span>
+      <button id="refresh" type="button">Обновить</button>
+      <button id="logout" type="button">Выйти</button>
+    </div>
+  </header>
 
-    <h2>Последние ошибки</h2>
-    <div class="wrap"><table id="errTable"></table></div>
+  <div class="login">
+    <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="current-password">
+    <button id="login" class="primary" type="button">Подключиться</button>
   </div>
+
+  <div id="message" role="status" aria-live="polite"></div>
+
+  <main id="app" hidden>
+    <nav class="nav" aria-label="Разделы администрирования">
+      <button class="active" data-view="overview" type="button">Обзор</button>
+      <button data-view="sources" type="button">Источники</button>
+      <button data-view="events" type="button">События</button>
+      <button data-view="suppressed" type="button">Подавленные</button>
+      <button data-view="errors" type="button">Журнал ошибок</button>
+    </nav>
+
+    <!-- ОБЗОР -->
+    <section id="view-overview" class="view">
+      <div class="panel-heading">
+        <h2>Состояние системы</h2>
+        <span id="generatedAt" class="muted small"></span>
+      </div>
+
+      <div class="cards" id="mainCards"></div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>События по статусам</h3>
+          <div id="statusStats"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Геолокация</h3>
+          <div id="geoStats"></div>
+        </div>
+
+        <div class="panel">
+          <h3>События по источникам</h3>
+          <div id="sourceStats"></div>
+        </div>
+
+        <div class="panel">
+          <h3>События по категориям</h3>
+          <div id="categoryStats"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Геокодирование</h3>
+        <div id="geocodeStats"></div>
+      </div>
+    </section>
+
+    <!-- ИСТОЧНИКИ -->
+    <section id="view-sources" class="view" hidden>
+      <div class="panel-heading">
+        <h2>Источники данных</h2>
+        <button id="refreshSources" type="button">Обновить список</button>
+      </div>
+
+      <p class="muted small">
+        Ручной запуск выполняет полноценную синхронизацию с базой данных.
+        Проверка источника (Probe) только проверяет получение и разбор данных.
+      </p>
+
+      <div class="table-wrap">
+        <table id="sourcesTable">
+          <thead>
+            <tr>
+              <th>Источник</th>
+              <th>Состояние</th>
+              <th>Интервал</th>
+              <th>Последний запуск</th>
+              <th>Получено / изменений</th>
+              <th>Запуски / ошибки</th>
+              <th>Последняя ошибка</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel" id="probePanel" hidden style="margin-top:16px">
+        <div class="panel-heading">
+          <h3 id="probeTitle">Результат проверки</h3>
+          <button id="closeProbe" type="button">Закрыть</button>
+        </div>
+        <div id="probeSummary"></div>
+        <pre id="probeJson" class="json"></pre>
+      </div>
+    </section>
+
+    <!-- СОБЫТИЯ -->
+    <section id="view-events" class="view" hidden>
+      <div class="panel-heading">
+        <h2>События</h2>
+        <span id="eventCount" class="muted small"></span>
+      </div>
+
+      <div class="filter-grid">
+        <input id="eventSearch" type="search" placeholder="Поиск: улица, заголовок, описание...">
+
+        <select id="filterStatus">
+          <option value="">Все статусы</option>
+          <option value="LIVE">LIVE</option>
+          <option value="ACTIVE">ACTIVE</option>
+          <option value="RECENT">RECENT</option>
+          <option value="EXPIRED">EXPIRED</option>
+          <option value="RESOLVED">RESOLVED</option>
+        </select>
+
+        <select id="filterSource">
+          <option value="">Все источники</option>
+        </select>
+
+        <select id="filterCategory">
+          <option value="">Все категории</option>
+        </select>
+
+        <select id="filterGeo">
+          <option value="">Любая геолокация</option>
+          <option value="source">Источник</option>
+          <option value="street">Улица</option>
+          <option value="district">Район</option>
+          <option value="city">Город</option>
+          <option value="none">Нет геолокации</option>
+        </select>
+
+        <button id="searchEvents" class="primary" type="button">Найти</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="eventsTable">
+          <thead>
+            <tr>
+              <th>Статус</th>
+              <th>Категория</th>
+              <th>Событие</th>
+              <th>Источник</th>
+              <th>Геолокация</th>
+              <th>Время события</th>
+              <th>Обновлено</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <span id="paginationInfo" class="muted small"></span>
+        <div class="bar">
+          <button id="prevPage" type="button">Назад</button>
+          <button id="nextPage" type="button">Далее</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ПОДАВЛЕННЫЕ -->
+    <section id="view-suppressed" class="view" hidden>
+      <div class="panel-heading">
+        <h2>Подавленные события</h2>
+        <button id="refreshSuppressed" type="button">Обновить</button>
+      </div>
+
+      <p class="muted small">
+        Удалённые здесь записи не будут повторно добавляться источниками,
+        пока блокировка не снята. Снятие блокировки само по себе не запускает источник.
+      </p>
+
+      <div class="table-wrap">
+        <table id="suppressedTable">
+          <thead>
+            <tr>
+              <th>ID события</th>
+              <th>Дата удаления / блокировки</th>
+              <th>Действие</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <span id="suppressedInfo" class="muted small"></span>
+        <div class="bar">
+          <button id="prevSuppressed" type="button">Назад</button>
+          <button id="nextSuppressed" type="button">Далее</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ОШИБКИ -->
+    <section id="view-errors" class="view" hidden>
+      <div class="panel-heading">
+        <h2>Журнал ошибок</h2>
+        <span class="muted small">Последние 30 записей</span>
+      </div>
+
+      <div class="table-wrap">
+        <table id="errorsTable">
+          <thead>
+            <tr>
+              <th>Время</th>
+              <th>Источник</th>
+              <th>Сообщение</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="footer">Wuppertal Live · Administration</div>
 
   <script src="js/config.js"></script>
+
   <script>
   (() => {
     'use strict';
-    const $ = (s) => document.querySelector(s);
-    const base = (window.WL_CONFIG.API_BASE || '').replace(/\/+$/, '');
+
+    const $ = (selector) => document.querySelector(selector);
+
+    const base = String(window.WL_CONFIG?.API_BASE || '').replace(/\/+$/, '');
+
+    const PAGE_SIZE = 100;
+
     let token = '';
-    try { token = sessionStorage.getItem('wl_admin') || ''; } catch { /* нет хранилища */ }
+    let overviewData = null;
+    let eventOffset = 0;
+    let suppressedOffset = 0;
+    let eventTotal = 0;
+    let suppressedTotal = 0;
+
+    try {
+      token = sessionStorage.getItem('wl_admin') || '';
+    } catch {
+      // Session storage может быть недоступен.
+    }
+
     $('#token').value = token;
 
-    const el = (tag, attrs, ...kids) => {
-      const n = document.createElement(tag);
-      for (const [k, v] of Object.entries(attrs || {})) { if (k === 'class') n.className = v; else n.setAttribute(k, v); }
-      for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
-      return n;
-    };
-    const msg = (text, cls) => { const m = $('#msg'); m.textContent = text || ''; m.className = cls || ''; };
-    const fmt = (iso) => iso ? new Date(iso).toLocaleString('ru-RU', { timeZone: 'Europe/Berlin' }) : '—';
+    // ---------- безопасное создание элементов ----------
 
-    async function call(path, method = 'GET', body) {
-      if (!base) throw new Error('API_BASE не задан в js/config.js');
-      const res = await fetch(base + path, {
-        method, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
-        body: body ? JSON.stringify(body) : undefined
+    function el(tag, attrs = {}, ...children) {
+      const node = document.createElement(tag);
+
+      for (const [key, value] of Object.entries(attrs)) {
+        if (key === 'class') {
+          node.className = value;
+        } else if (key === 'text') {
+          node.textContent = value;
+        } else {
+          node.setAttribute(key, value);
+        }
+      }
+
+      for (const child of children.flat()) {
+        if (child == null) continue;
+
+        node.append(
+          child instanceof Node
+            ? child
+            : document.createTextNode(String(child))
+        );
+      }
+
+      return node;
+    }
+
+    function button(label, handler, className = '') {
+      const node = el('button', {
+        type: 'button',
+        class: className
+      }, label);
+
+      node.addEventListener('click', handler);
+
+      return node;
+    }
+
+    function message(text, type = '') {
+      const node = $('#message');
+
+      node.textContent = text || '';
+      node.className = type;
+    }
+
+    function fmt(value) {
+      if (!value) return '—';
+
+      const date = new Date(value);
+
+      if (Number.isNaN(date.getTime())) return String(value);
+
+      return date.toLocaleString('ru-RU', {
+        timeZone: 'Europe/Berlin'
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    }
+
+    function number(value) {
+      return Number(value || 0).toLocaleString('ru-RU');
+    }
+
+    function tag(text, type = '') {
+      return el('span', {
+        class: `tag ${type}`
+      }, text);
+    }
+
+    function emptyRow(tbody, colspan, text = 'Нет записей') {
+      tbody.replaceChildren(
+        el('tr', {},
+          el('td', {
+            colspan: String(colspan),
+            class: 'empty'
+          }, text)
+        )
+      );
+    }
+
+    function tableBody(tableId, rows, colspan, emptyText) {
+      const tbody = $(`#${tableId} tbody`);
+
+      tbody.replaceChildren();
+
+      if (!rows || !rows.length) {
+        emptyRow(tbody, colspan, emptyText);
+      }
+
+      return tbody;
+    }
+
+    // ---------- API ----------
+
+    async function api(path, method = 'GET', body) {
+      if (!base) {
+        throw new Error('API_BASE не задан в js/config.js');
+      }
+
+      if (!token) {
+        throw new Error('Введите ADMIN_TOKEN');
+      }
+
+      const options = {
+        method,
+        headers: {
+          authorization: 'Bearer ' + token
+        }
+      };
+
+      if (body !== undefined) {
+        options.headers['content-type'] = 'application/json';
+        options.body = JSON.stringify(body);
+      }
+
+      let response;
+
+      try {
+        response = await fetch(base + path, options);
+      } catch {
+        throw new Error('Не удалось подключиться к Worker. Проверьте сеть и CORS.');
+      }
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const errors = {
+          unauthorized: 'Неверный ADMIN_TOKEN или токен не задан.',
+          too_many_attempts: 'Слишком много неудачных попыток. Попробуйте позже.',
+          rate_limited: 'Слишком много запросов. Подождите.',
+          internal_error: 'Внутренняя ошибка Worker.',
+          unknown_source: 'Источник не зарегистрирован.',
+          not_found: 'Маршрут не найден.'
+        };
+
+        throw new Error(
+          errors[data.error] ||
+          data.error ||
+          `HTTP ${response.status}`
+        );
+      }
+
       return data;
     }
 
-    function table(node, head, rows) {
-      node.replaceChildren(
-        el('thead', {}, el('tr', {}, head.map((h) => el('th', {}, h)))),
-        el('tbody', {}, rows.map((r) => el('tr', {}, r.map((c) => el('td', {}, c))))));
+    // ---------- навигация ----------
+
+    function showView(name) {
+      document.querySelectorAll('.view').forEach((view) => {
+        view.hidden = view.id !== `view-${name}`;
+      });
+
+      document.querySelectorAll('.nav button').forEach((btn) => {
+        btn.classList.toggle(
+          'active',
+          btn.dataset.view === name
+        );
+      });
+
+      if (name === 'events') loadEvents();
+      if (name === 'suppressed') loadSuppressed();
     }
 
-    async function overview() {
-      const o = await call('/api/admin/overview');
-      $('#app').hidden = false;
-      $('#stats').replaceChildren(
-        ...o.events_by_status.map((s) => el('span', {}, `${s.status}: ${s.n}`)),
-        ...o.events_by_source.map((s) => el('span', {}, `${s.source}: ${s.n}`)),
-        el('span', {}, `геокод-кэш: ${o.geocode_cached}`));
+    document.querySelectorAll('.nav button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        showView(btn.dataset.view);
+      });
+    });
 
-      table($('#srcTable'), ['Источник', 'Вкл', 'Интервал', 'Последний успех', 'Получено / изменено', 'Запусков / ошибок', 'Последняя ошибка', ''],
-        o.sources.map((s) => {
-          const toggle = el('button', { type: 'button' }, s.enabled ? 'Выключить' : 'Включить');
-          toggle.onclick = async () => { await call(`/api/admin/sources/${s.id}/toggle`, 'POST', { enabled: !s.enabled }); overview(); };
-          const run = el('button', { type: 'button' }, 'Запустить');
-          run.onclick = async () => {
-            msg('Выполняется…');
-            try { const r = await call(`/api/admin/sources/${s.id}/run`, 'POST'); msg(JSON.stringify(r), r.ok ? 'ok' : 'bad'); } catch (e) { msg(e.message, 'bad'); }
-            overview();
-          };
-          const probe = el('button', { type: 'button' }, 'Проба');
-          probe.onclick = async () => {
-            const p = $('#probe'); p.hidden = false; p.textContent = 'Запрос…';
-            try { p.textContent = JSON.stringify(await call(`/api/admin/sources/${s.id}/probe`), null, 2); } catch (e) { p.textContent = e.message; }
-          };
-          return [s.id, s.enabled ? 'да' : 'нет', `${s.interval_sec} с`, fmt(s.last_success_at),
-            `${s.last_fetched} / ${s.last_changes}`, `${s.runs} / ${s.errors}`,
-            el('span', { class: s.last_error ? 'bad' : 'muted' }, s.last_error ? `${fmt(s.last_error_at)}: ${s.last_error}` : '—'),
-            el('div', { class: 'bar' }, run, probe, toggle)];
-        }));
+    // ---------- статистика ----------
 
-      table($('#errTable'), ['Время', 'Источник', 'Сообщение'], o.errors.map((e) => [fmt(e.ts), e.source || '', e.message]));
+    function renderCards(data) {
+      const active = (data.events_by_status || [])
+        .filter((item) => ['LIVE', 'ACTIVE', 'RECENT'].includes(item.status))
+        .reduce((sum, item) => sum + Number(item.n || 0), 0);
+
+      const sources = data.sources || [];
+      const enabled = sources.filter((source) => !!source.enabled).length;
+      const errors = sources.reduce(
+        (sum, source) => sum + Number(source.errors || 0),
+        0
+      );
+
+      const coordinates = data.coordinates || {};
+
+      const cards = [
+        {
+          label: 'Всего событий',
+          value: data.events_total,
+          note: 'Все записи в базе'
+        },
+        {
+          label: 'Активные события',
+          value: active,
+          note: 'LIVE / ACTIVE / RECENT'
+        },
+        {
+          label: 'Источники',
+          value: `${enabled} / ${sources.length}`,
+          note: 'Включено'
+        },
+        {
+          label: 'Запуски с ошибками',
+          value: errors,
+          note: 'Накопительно по источникам'
+        },
+        {
+          label: 'С координатами',
+          value: coordinates.with_coordinates,
+          note: 'Записи с latitude и longitude'
+        },
+        {
+          label: 'Без координат',
+          value: coordinates.without_coordinates,
+          note: 'Требуют проверки геолокации'
+        },
+        {
+          label: 'Подавленные',
+          value: data.suppressed_total,
+          note: 'Исключены из повторного импорта'
+        },
+        {
+          label: 'Геокэш',
+          value: data.geocode?.total,
+          note: `Найдено: ${number(data.geocode?.found)}`
+        }
+      ];
+
+      $('#mainCards').replaceChildren(
+        ...cards.map((card) =>
+          el('div', { class: 'card' },
+            el('div', { class: 'card-label' }, card.label),
+            el('div', { class: 'card-value' }, number(card.value)),
+            el('div', { class: 'card-note' }, card.note)
+          )
+        )
+      );
     }
 
-    async function events() {
-      const q = new URLSearchParams({ limit: '200' });
-      if ($('#fStatus').value) q.set('status', $('#fStatus').value);
-      if ($('#fSource').value) q.set('source', $('#fSource').value);
-      const r = await call('/api/admin/events?' + q);
-      table($('#evTable'), ['Статус', 'Категория', 'Заголовок', 'Источник', 'Место', 'Событие', 'Опубликовано', 'Получено', ''],
-        r.events.map((e) => {
-          const del = el('button', { type: 'button', class: 'danger' }, 'Удалить');
-          del.onclick = async () => {
-            if (!confirm('Удалить запись? Источник не сможет добавить её снова.')) return;
-            await call('/api/admin/events/' + encodeURIComponent(e.id), 'DELETE'); events();
-          };
-          return [e.status, e.category, e.title, e.source, `${e.geo_precision}${e.location_name ? ': ' + e.location_name : ''}`,
-            e.event_time ? `${fmt(e.event_time)} (${e.time_precision})` : 'неизвестно', fmt(e.published_at), fmt(e.received_at), del];
-        }));
+    function renderStatsList(node, items, labelKey, emptyText) {
+      node.replaceChildren();
+
+      if (!items || !items.length) {
+        node.append(el('div', { class: 'empty' }, emptyText));
+        return;
+      }
+
+      const max = Math.max(
+        1,
+        ...items.map((item) => Number(item.n || 0))
+      );
+
+      for (const item of items) {
+        const value = Number(item.n || 0);
+        const label = item[labelKey] || 'не указано';
+
+        const row = el('div', {
+          style: 'margin:10px 0'
+        },
+          el('div', {
+            class: 'bar',
+            style: 'justify-content:space-between'
+          },
+            el('span', {}, label),
+            el('strong', {}, number(value))
+          ),
+          el('div', {
+            style: 'height:6px;background:#263548;border-radius:8px;margin-top:5px;overflow:hidden'
+          },
+            el('div', {
+              style: `height:100%;width:${Math.max(0, value / max * 100)}%;background:#5aa9ff;border-radius:8px`
+            })
+          )
+        );
+
+        node.append(row);
+      }
     }
+
+    function renderGeocode(data) {
+      const geo = data.geocode || {};
+
+      $('#geocodeStats').replaceChildren(
+        el('div', { class: 'bar' },
+          tag(`Всего: ${number(geo.total)}`, 'info'),
+          tag(`Найдено: ${number(geo.found)}`, 'ok'),
+          tag(`Не найдено: ${number(geo.not_found)}`, 'warn')
+        )
+      );
+    }
+
+    // ---------- источники ----------
+
+    function renderSourceFilters(sources) {
+      const select = $('#filterSource');
+      const previous = select.value;
+
+      select.replaceChildren(
+        el('option', { value: '' }, 'Все источники')
+      );
+
+      for (const source of sources) {
+        select.append(
+          el('option', {
+            value: source.id
+          }, `${source.name} (${source.id})`)
+        );
+      }
+
+      if (sources.some((source) => source.id === previous)) {
+        select.value = previous;
+      }
+    }
+
+    function renderCategoryFilters(categories) {
+      const select = $('#filterCategory');
+      const previous = select.value;
+
+      select.replaceChildren(
+        el('option', { value: '' }, 'Все категории')
+      );
+
+      for (const category of categories) {
+        select.append(
+          el('option', {
+            value: category.category
+          }, category.category)
+        );
+      }
+
+      if (categories.some((item) => item.category === previous)) {
+        select.value = previous;
+      }
+    }
+
+    function renderSources(sources) {
+      const tbody = tableBody(
+        'sourcesTable',
+        sources,
+        8,
+        'Источники ещё не зарегистрированы'
+      );
+
+      for (const source of sources) {
+        const enabled = !!source.enabled;
+
+        const lastError = source.last_error
+          ? `${fmt(source.last_error_at)}: ${source.last_error}`
+          : '—';
+
+        const status = enabled
+          ? tag('Включён', 'ok')
+          : tag('Выключен', 'warn');
+
+        const run = button('Запустить', async (event) => {
+          await sourceAction(event, source.id, 'run');
+        });
+
+        const probe = button('Проверить', async (event) => {
+          await sourceAction(event, source.id, 'probe');
+        });
+
+        const toggle = button(
+          enabled ? 'Выключить' : 'Включить',
+          async (event) => {
+            await sourceAction(event, source.id, 'toggle', {
+              enabled: !enabled
+            });
+          }
+        );
+
+        const actions = el('div', { class: 'actions' },
+          run,
+          probe,
+          toggle
+        );
+
+        const row = el('tr', {},
+          el('td', {},
+            el('div', { class: 'source-name' }, source.name),
+            el('div', { class: 'source-id' }, source.id)
+          ),
+          el('td', {}, status),
+          el('td', {}, `${number(source.interval_sec)} сек.`),
+          el('td', {},
+            fmt(source.last_run_at),
+            el('div', { class: 'muted small' },
+              `Успех: ${fmt(source.last_success_at)}`
+            )
+          ),
+          el('td', {},
+            `${number(source.last_fetched)} / ${number(source.last_changes)}`
+          ),
+          el('td', {},
+            `${number(source.runs)} / ${number(source.errors)}`
+          ),
+          el('td', {
+            class: source.last_error ? 'red' : 'muted'
+          }, lastError),
+          el('td', {}, actions)
+        );
+
+        tbody.append(row);
+      }
+    }
+
+    async function sourceAction(buttonNode, sourceId, action, body) {
+      const label = action === 'run'
+        ? 'Запуск'
+        : action === 'probe'
+          ? 'Проверка'
+          : 'Изменение настроек';
+
+      if (action === 'run') {
+        if (!confirm(`Запустить источник ${sourceId} вручную?`)) return;
+      }
+
+      buttonNode.disabled = true;
+      message(`${label}: ${sourceId}…`);
+
+      try {
+        let result;
+
+        if (action === 'probe') {
+          result = await api(
+            `/api/admin/sources/${sourceId}/probe`
+          );
+
+          showProbe(sourceId, result);
+          message(`Проверка ${sourceId} завершена.`, 'green');
+        } else if (action === 'run') {
+          result = await api(
+            `/api/admin/sources/${sourceId}/run`,
+            'POST'
+          );
+
+          if (result.ok === false) {
+            message(
+              `Источник ${sourceId} завершил работу с ошибкой: ${result.error || 'неизвестная ошибка'}`,
+              'red'
+            );
+          } else {
+            message(
+              `Источник ${sourceId}: запуск завершён. Получено: ${number(result.fetched)}, изменений: ${number(result.changes)}.`,
+              'green'
+            );
+          }
+
+          await refreshAll();
+        } else {
+          result = await api(
+            `/api/admin/sources/${sourceId}/toggle`,
+            'POST',
+            body
+          );
+
+          message(
+            `${sourceId}: ${result.enabled ? 'включён' : 'выключен'}.`,
+            'green'
+          );
+
+          await refreshAll();
+        }
+      } catch (error) {
+        message(error.message, 'red');
+      } finally {
+        buttonNode.disabled = false;
+      }
+    }
+
+    // ---------- probe ----------
+
+    function showProbe(sourceId, data) {
+      const panel = $('#probePanel');
+
+      panel.hidden = false;
+      $('#probeTitle').textContent = `Проверка источника: ${sourceId}`;
+
+      const summary = $('#probeSummary');
+      summary.replaceChildren();
+
+      const fields = [
+        ['HTTP-статус', data.status],
+        ['Получено байт', data.xml_bytes ?? data.bytes],
+        ['Ситуаций', data.situations],
+        ['Распознано', data.parsed_situations],
+        ['С координатами', data.situations_with_coordinates],
+        ['Без координат', data.situations_without_coordinates],
+        ['Сгруппировано', data.grouped_records],
+        ['Найдено записей', data.fetched]
+      ].filter(([, value]) => value !== undefined && value !== null);
+
+      if (fields.length) {
+        const grid = el('div', { class: 'probe-summary' });
+
+        for (const [label, value] of fields) {
+          grid.append(
+            el('div', {},
+              el('strong', {}, number(value)),
+              el('span', {}, label)
+            )
+          );
+        }
+
+        summary.append(grid);
+      } else {
+        summary.append(
+          el('div', { class: 'muted small' },
+            'Источник не вернул стандартные диагностические поля. Полный ответ ниже.'
+          )
+        );
+      }
+
+      $('#probeJson').textContent = JSON.stringify(data, null, 2);
+
+      panel.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    }
+
+    // ---------- события ----------
+
+    function statusTag(status) {
+      const types = {
+        LIVE: 'ok',
+        ACTIVE: 'ok',
+        RECENT: 'info',
+        EXPIRED: 'warn',
+        RESOLVED: ''
+      };
+
+      return tag(status || '—', types[status] || '');
+    }
+
+    function geoTag(precision) {
+      const types = {
+        source: 'ok',
+        street: 'ok',
+        district: 'warn',
+        city: 'warn',
+        none: 'bad'
+      };
+
+      return tag(precision || 'none', types[precision] || '');
+    }
+
+    function eventDetails(event) {
+      const details = el('details', {});
+
+      details.append(
+        el('summary', {}, 'Подробнее')
+      );
+
+      const content = el('div', {
+        class: 'small',
+        style: 'margin-top:8px;max-width:450px'
+      });
+
+      const lines = [
+        ['ID', event.id],
+        ['Описание', event.description],
+        ['Место', event.location_name],
+        ['Район', event.district],
+        ['Координаты', event.latitude != null
+          ? `${event.latitude}, ${event.longitude}`
+          : 'Нет'],
+        ['Точность', event.geo_precision],
+        ['Причина статуса', event.status_reason],
+        ['Уверенность', event.confidence],
+        ['Проверено', event.is_verified ? 'Да' : 'Нет'],
+        ['Дата публикации', fmt(event.published_at)],
+        ['Дата получения', fmt(event.received_at)],
+        ['Дата обновления', fmt(event.updated_at)],
+        ['Дата окончания', fmt(event.expires_at)],
+        ['Ссылка', event.source_url]
+      ];
+
+      for (const [label, value] of lines) {
+        if (value === null || value === undefined || value === '') continue;
+
+        const line = el('div', {
+          style: 'margin:5px 0;overflow-wrap:anywhere'
+        },
+          el('strong', {}, `${label}: `),
+          String(value)
+        );
+
+        content.append(line);
+      }
+
+      details.append(content);
+
+      return details;
+    }
+
+    function renderEvents(events) {
+      const tbody = tableBody(
+        'eventsTable',
+        events,
+        8,
+        'События не найдены'
+      );
+
+      for (const event of events) {
+        const remove = button('Удалить', async () => {
+          if (!confirm(
+            `Удалить событие?\n\n${event.title}\n\nОно будет добавлено в список подавленных и не вернётся при следующем импорте.`
+          )) return;
+
+          try {
+            await api(
+              '/api/admin/events/' + encodeURIComponent(event.id),
+              'DELETE'
+            );
+
+            message('Событие удалено и добавлено в подавленные.', 'green');
+
+            await loadEvents();
+            await refreshOverview();
+          } catch (error) {
+            message(error.message, 'red');
+          }
+        }, 'danger');
+
+        const title = el('div', {},
+          el('strong', {}, event.title || 'Без заголовка'),
+          event.description
+            ? el('div', { class: 'muted small' },
+                event.description.slice(0, 180) +
+                (event.description.length > 180 ? '…' : '')
+              )
+            : null,
+          eventDetails(event)
+        );
+
+        const location = el('div', {},
+          geoTag(event.geo_precision),
+          event.location_name
+            ? el('div', { class: 'small' }, event.location_name)
+            : null,
+          event.district
+            ? el('div', { class: 'muted small' }, event.district)
+            : null
+        );
+
+        tbody.append(
+          el('tr', {},
+            el('td', {}, statusTag(event.status)),
+            el('td', {}, event.category || '—'),
+            el('td', {}, title),
+            el('td', {}, event.source || '—'),
+            el('td', {}, location),
+            el('td', {},
+              fmt(event.event_time),
+              el('div', { class: 'muted small' }, event.time_precision || '')
+            ),
+            el('td', {}, fmt(event.updated_at)),
+            el('td', {}, remove)
+          )
+        );
+      }
+    }
+
+    async function loadEvents() {
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(eventOffset)
+      });
+
+      const search = $('#eventSearch').value.trim();
+      const status = $('#filterStatus').value;
+      const source = $('#filterSource').value;
+      const category = $('#filterCategory').value;
+      const geo = $('#filterGeo').value;
+
+      if (search) params.set('q', search);
+      if (status) params.set('status', status);
+      if (source) params.set('source', source);
+      if (category) params.set('category', category);
+      if (geo) params.set('geo_precision', geo);
+
+      $('#searchEvents').disabled = true;
+
+      try {
+        const result = await api(
+          '/api/admin/events?' + params.toString()
+        );
+
+        eventTotal = Number(result.total || 0);
+
+        renderEvents(result.events || []);
+
+        $('#eventCount').textContent =
+          `Найдено: ${number(eventTotal)}`;
+
+        const start = eventTotal
+          ? eventOffset + 1
+          : 0;
+
+        const end = Math.min(
+          eventOffset + PAGE_SIZE,
+          eventTotal
+        );
+
+        $('#paginationInfo').textContent =
+          `${number(start)}–${number(end)} из ${number(eventTotal)}`;
+
+        $('#prevPage').disabled = eventOffset <= 0;
+        $('#nextPage').disabled = eventOffset + PAGE_SIZE >= eventTotal;
+      } catch (error) {
+        message(error.message, 'red');
+      } finally {
+        $('#searchEvents').disabled = false;
+      }
+    }
+
+    // ---------- подавленные ----------
+
+    async function loadSuppressed() {
+      try {
+        const result = await api(
+          `/api/admin/suppressed?limit=${PAGE_SIZE}&offset=${suppressedOffset}`
+        );
+
+        suppressedTotal = Number(result.total || 0);
+
+        const items = result.items || [];
+
+        const tbody = tableBody(
+          'suppressedTable',
+          items,
+          3,
+          'Подавленных событий нет'
+        );
+
+        for (const item of items) {
+          const restore = button('Снять блокировку', async () => {
+            if (!confirm(
+              `Снять блокировку для ${item.id}?\n\nЗапись сможет снова появиться при следующем запуске источника.`
+            )) return;
+
+            try {
+              await api(
+                '/api/admin/suppressed/' + encodeURIComponent(item.id),
+                'DELETE'
+              );
+
+              message(
+                'Блокировка снята. Для повторного импорта запустите источник.',
+                'green'
+              );
+
+              await loadSuppressed();
+              await refreshOverview();
+            } catch (error) {
+              message(error.message, 'red');
+            }
+          });
+
+          tbody.append(
+            el('tr', {},
+              el('td', {}, item.id),
+              el('td', {}, fmt(item.ts)),
+              el('td', {}, restore)
+            )
+          );
+        }
+
+        const start = suppressedTotal
+          ? suppressedOffset + 1
+          : 0;
+
+        const end = Math.min(
+          suppressedOffset + PAGE_SIZE,
+          suppressedTotal
+        );
+
+        $('#suppressedInfo').textContent =
+          `${number(start)}–${number(end)} из ${number(suppressedTotal)}`;
+
+        $('#prevSuppressed').disabled = suppressedOffset <= 0;
+        $('#nextSuppressed').disabled =
+          suppressedOffset + PAGE_SIZE >= suppressedTotal;
+      } catch (error) {
+        message(error.message, 'red');
+      }
+    }
+
+    // ---------- ошибки ----------
+
+    function renderErrors(errors) {
+      const tbody = tableBody(
+        'errorsTable',
+        errors,
+        3,
+        'Ошибок нет'
+      );
+
+      for (const error of errors) {
+        tbody.append(
+          el('tr', {},
+            el('td', {}, fmt(error.ts)),
+            el('td', {}, error.source || '—'),
+            el('td', { class: 'red' }, error.message || '—')
+          )
+        );
+      }
+    }
+
+    // ---------- обновление данных ----------
+
+    async function refreshOverview() {
+      const data = await api('/api/admin/overview');
+
+      overviewData = data;
+
+      $('#generatedAt').textContent =
+        `Обновлено: ${fmt(data.generated_at)}`;
+
+      renderCards(data);
+
+      renderStatsList(
+        $('#statusStats'),
+        data.events_by_status,
+        'status',
+        'Нет данных'
+      );
+
+      renderStatsList(
+        $('#geoStats'),
+        data.events_by_geo_precision,
+        'geo_precision',
+        'Нет данных'
+      );
+
+      renderStatsList(
+        $('#sourceStats'),
+        data.events_by_source,
+        'source',
+        'Нет данных'
+      );
+
+      renderStatsList(
+        $('#categoryStats'),
+        data.events_by_category,
+        'category',
+        'Нет данных'
+      );
+
+      renderGeocode(data);
+
+      renderSources(data.sources || []);
+      renderSourceFilters(data.sources || []);
+      renderCategoryFilters(data.events_by_category || []);
+
+      renderErrors(data.errors || []);
+
+      $('#connection').textContent = 'Подключено';
+      $('#connection').className = 'tag ok';
+
+      return data;
+    }
+
+    async function refreshAll() {
+      try {
+        await refreshOverview();
+
+        if (!$('#view-events').hidden) {
+          await loadEvents();
+        }
+
+        if (!$('#view-suppressed').hidden) {
+          await loadSuppressed();
+        }
+      } catch (error) {
+        $('#connection').textContent = 'Ошибка';
+        $('#connection').className = 'tag bad';
+
+        message(error.message, 'red');
+
+        throw error;
+      }
+    }
+
+    // ---------- вход / выход ----------
 
     async function login() {
       token = $('#token').value.trim();
-      try { sessionStorage.setItem('wl_admin', token); } catch { /* ок */ }
-      msg('');
-      try { await overview(); await events(); } catch (e) { $('#app').hidden = true; msg(e.message, 'bad'); }
+
+      if (!token) {
+        message('Введите ADMIN_TOKEN.', 'red');
+        return;
+      }
+
+      try {
+        sessionStorage.setItem('wl_admin', token);
+      } catch {
+        // Работаем без сохранения сессии.
+      }
+
+      message('Подключение к Worker…');
+
+      $('#login').disabled = true;
+
+      try {
+        await refreshAll();
+
+        $('#app').hidden = false;
+
+        message('Подключение успешно.', 'green');
+
+        showView('overview');
+      } catch {
+        $('#app').hidden = true;
+      } finally {
+        $('#login').disabled = false;
+      }
     }
-    $('#login').onclick = login;
-    $('#refresh').onclick = login;
-    $('#loadEvents').onclick = () => events().catch((e) => msg(e.message, 'bad'));
-    $('#token').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
-    if (token) login();
+
+    function logout() {
+      token = '';
+
+      try {
+        sessionStorage.removeItem('wl_admin');
+      } catch {
+        // Игнорируем.
+      }
+
+      $('#token').value = '';
+      $('#app').hidden = true;
+
+      $('#connection').textContent = 'Не подключено';
+      $('#connection').className = 'tag warn';
+
+      message('Вы вышли из админки.');
+    }
+
+    // ---------- события интерфейса ----------
+
+    $('#login').addEventListener('click', login);
+    $('#refresh').addEventListener('click', () => {
+      refreshAll().catch(() => {});
+    });
+
+    $('#logout').addEventListener('click', logout);
+
+    $('#token').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') login();
+    });
+
+    $('#refreshSources').addEventListener('click', () => {
+      refreshOverview().catch((error) => message(error.message, 'red'));
+    });
+
+    $('#closeProbe').addEventListener('click', () => {
+      $('#probePanel').hidden = true;
+    });
+
+    $('#searchEvents').addEventListener('click', () => {
+      eventOffset = 0;
+      loadEvents();
+    });
+
+    $('#eventSearch').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        eventOffset = 0;
+        loadEvents();
+      }
+    });
+
+    for (const id of [
+      'filterStatus',
+      'filterSource',
+      'filterCategory',
+      'filterGeo'
+    ]) {
+      $(`#${id}`).addEventListener('change', () => {
+        eventOffset = 0;
+        loadEvents();
+      });
+    }
+
+    $('#prevPage').addEventListener('click', () => {
+      eventOffset = Math.max(0, eventOffset - PAGE_SIZE);
+      loadEvents();
+    });
+
+    $('#nextPage').addEventListener('click', () => {
+      if (eventOffset + PAGE_SIZE < eventTotal) {
+        eventOffset += PAGE_SIZE;
+        loadEvents();
+      }
+    });
+
+    $('#refreshSuppressed').addEventListener('click', loadSuppressed);
+
+    $('#prevSuppressed').addEventListener('click', () => {
+      suppressedOffset = Math.max(0, suppressedOffset - PAGE_SIZE);
+      loadSuppressed();
+    });
+
+    $('#nextSuppressed').addEventListener('click', () => {
+      if (suppressedOffset + PAGE_SIZE < suppressedTotal) {
+        suppressedOffset += PAGE_SIZE;
+        loadSuppressed();
+      }
+    });
+
+    // Автоматическое подключение при наличии токена в текущей сессии.
+    if (token) {
+      login();
+    }
   })();
   </script>
 </body>
