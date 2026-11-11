@@ -231,6 +231,19 @@ function parseFeed(xml) {
  * Am Unterbarmer Friedhof
  * Oberer Grifflenberg
  */
+
+/**
+ * Ищет возможные названия улиц в тексте.
+ *
+ * Поддерживает:
+ * Siebeneicker Straße
+ * Friedrich-Engels-Allee
+ * Am Unterbarmer Friedhof
+ * Oberer Grifflenberg
+ *
+ * Важно: точка в конце предложения не должна становиться
+ * частью названия улицы.
+ */
 function extractStreetCandidates(text) {
   if (!text) return [];
 
@@ -238,22 +251,24 @@ function extractStreetCandidates(text) {
 
   const patterns = [
     new RegExp(
-      `\\b[A-ZÄÖÜ][\\p{L}\\d.'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d.'’\\-]*){0,4}\\s+${STREET_SUFFIX}\\b`,
+      `\\b[A-ZÄÖÜ][\\p{L}\\d'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d'’\\-]*){0,4}\\s+${STREET_SUFFIX}\\b`,
       'gu'
     ),
 
     new RegExp(
-      `\\b[A-ZÄÖÜ][\\p{L}\\d.'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d.'’]*)*${STREET_SUFFIX}\\b`,
+      `\\b[A-ZÄÖÜ][\\p{L}\\d'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d'’]*)*${STREET_SUFFIX}\\b`,
       'gu'
     ),
 
-    /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d.-]*(?:\s+[A-ZÄÖÜ][\p{L}\d.-]*){0,3}/gu
+    // Названия с предлогами.
+    // Точку намеренно исключили: она может быть концом предложения.
+    /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
   ];
 
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       const value = match[0]
-        .replace(/[.,;:]+$/, '')
+        .replace(/[.,;:!?]+$/, '')
         .trim();
 
       if (value.length < 4 || value.length > 100) continue;
@@ -283,18 +298,62 @@ function extractStreetCandidates(text) {
 }
 
 /**
- * Определяет тип географической привязки:
+ * Определяет тип географической привязки.
  *
- * single:
- *   Siebeneicker Straße
+ * Особая обработка:
+ * zwischen Untenrohleder und Am Elisabetheim.
  *
- * intersection:
- *   Kreuzung Friedrich-Engels-Allee / Morianstraße
- *
- * between:
- *   zwischen Pahlkestraße und ... 
+ * Здесь Untenrohleder не имеет стандартного окончания улицы,
+ * поэтому нельзя полагаться только на общий поиск STREET_SUFFIX.
  */
 function extractLocation(text) {
+  if (!text) {
+    return {
+      type: 'none',
+      streets: [],
+      label: null
+    };
+  }
+
+  // Сначала разбираем конструкции "zwischen X und Y".
+  // Это позволяет распознавать и названия без Straße/Weg/Platz.
+  const betweenMatch = /\bzwischen\s+/i.exec(text);
+
+  if (betweenMatch) {
+    const segment = text.slice(
+      betweenMatch.index + betweenMatch[0].length
+    );
+
+    // Берём только текущую конструкцию до конца предложения.
+    // Следующее предложение (например, "Auf einer Fläche...")
+    // не может попасть в название второй улицы.
+    const pairMatch = segment.match(
+      /^\s*(.+?)\s+und\s+(.+?)(?=[.!?;,\n]|$)/i
+    );
+
+    if (pairMatch) {
+      const streets = [
+        pairMatch[1],
+        pairMatch[2]
+      ].map((value) =>
+        value
+          .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
+          .trim()
+      );
+
+      if (
+        streets.length === 2 &&
+        streets.every((street) => street.length >= 3 && street.length <= 100)
+      ) {
+        return {
+          type: 'between',
+          streets,
+          label: `zwischen ${streets[0]} und ${streets[1]}`
+        };
+      }
+    }
+  }
+
   const candidates = extractStreetCandidates(text);
 
   if (!candidates.length) {
@@ -305,24 +364,7 @@ function extractLocation(text) {
     };
   }
 
-  const betweenMatch = /\bzwischen\b/i.exec(text);
-
-  if (betweenMatch) {
-    const after = candidates.filter(
-      (item) => item.index > betweenMatch.index
-    );
-
-    if (after.length >= 2) {
-      const streets = after.slice(0, 2).map((item) => item.name);
-
-      return {
-        type: 'between',
-        streets,
-        label: `zwischen ${streets[0]} und ${streets[1]}`
-      };
-    }
-  }
-
+  // Перекрёстки.
   const intersectionMatch =
     /\b(kreuzung|kreuzungsbereich|ecke|einmündung|muendung|mündung|kreuzen sich)\b/i.exec(text);
 
@@ -342,7 +384,7 @@ function extractLocation(text) {
     }
   }
 
-  // Иногда перекрёсток записан без слова Kreuzung:
+  // Перекрёсток без слова Kreuzung:
   // Friedrich-Engels-Allee / Morianstraße.
   if (candidates.length >= 2) {
     const first = candidates[0];
