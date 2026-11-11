@@ -62,6 +62,7 @@ window.WL_I18N = {
     filters: 'Фильтры', resetFilters: 'Сбросить фильтры', menu: 'Меню', language: 'Язык', theme: 'Тема',
     themeAuto: 'Авто', themeLight: 'Светлая', themeDark: 'Тёмная',
     periodHint: 'Период относится к недавним сообщениям. Действующие события источников показываются независимо от него.',
+    machTr: 'Автоперевод с немецкого, возможны неточности.', origDe: 'Оригинал на немецком.', showOrig: 'Показать оригинал', showTr: 'Показать перевод',
     lagPub: 'опубликовано через {d}', u_d: 'д', u_h: 'ч', u_m: 'мин', toList: 'К списку'
   },
   de: {
@@ -126,6 +127,7 @@ window.WL_I18N = {
     filters: 'Filter', resetFilters: 'Filter zurücksetzen', menu: 'Menü', language: 'Sprache', theme: 'Design',
     themeAuto: 'Auto', themeLight: 'Hell', themeDark: 'Dunkel',
     periodHint: 'Der Zeitraum gilt für neueste Meldungen. Aktive Meldungen der Quellen werden unabhängig davon angezeigt.',
+    machTr: '', origDe: '', showOrig: '', showTr: '',
     lagPub: 'veröffentlicht nach {d}', u_d: 'T', u_h: 'Std', u_m: 'Min', toList: 'Zur Liste'
   }
 };
