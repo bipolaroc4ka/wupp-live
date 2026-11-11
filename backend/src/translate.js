@@ -11,15 +11,21 @@ const MAX_DESC = 1600;
 const PER_RUN = 6;
 const SCAN_LIMIT = 500;
 
-// Окончания немецких названий улиц и мест.
-// Включены полные формы и распространённые сокращения.
-const STREET_SUFFIX =
-  '(?:straße|strasse|str\\.?|weg|platz|allee|ring|gasse|ufer|damm|chaussee|stieg|markt|brücke|bruecke|promenade|wall|höfe|hoefe)';
+// Названия улиц и мест не переводим: их не отправляем в модель, а вставляем как есть.
+// Регулярки БЕЗ флага i: с ним \p{Lu} совпадает и со строчными буквами, и защита «съедала» бы обычные слова
+// («Unfall auf der Hauptstraße», «Bitte Rettungsgasse»). Заглавная буква здесь действительно обязательна.
+const SUFFIX_JOINED = '(?:[Ss]traße|[Ss]trasse|[Ss]tr\\.|[Ww]eg|[Pp]latz|[Aa]llee|[Rr]ing|[Gg]asse|[Uu]fer|[Dd]amm|[Cc]haussee|[Ss]tieg|[Bb]rücke|[Bb]ruecke|[Pp]romenade|[Ww]all|[Hh]öfe|[Hh]oefe|[Mm]arkt)';
+const SUFFIX_SEPARATE = '(?:Straße|Strasse|Str\\.|Weg|Platz|Allee|Ring|Gasse|Ufer|Damm|Markt|Brücke|Promenade)';
+const NAME_CHARS = String.raw`[\p{L}\p{M}0-9'’-]`;
+// слова, с которых название не начинается («Der Weg», «Sperrung Hauptstraße» и т.п.)
+const NOT_A_NAME = '(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einer|Auf|An|Am|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung)';
 
-const PLACE_PATTERN = new RegExp(
-  String.raw`(?<![\p{L}\p{N}])(?:[\p{Lu}][\p{L}\p{M}0-9.'’()-]*[ \t]+){0,3}[\p{Lu}][\p{L}\p{M}0-9.'’()-]*${STREET_SUFFIX}(?![\p{L}\p{N}])`,
-  'giu'
-);
+// «Hauptstraße», «Friedrich-Ebert-Straße», «Bahnhofstr.»
+const PLACE_JOINED = new RegExp(String.raw`(?<![\p{L}\p{N}])\p{Lu}${NAME_CHARS}*${SUFFIX_JOINED}(?![\p{L}\p{N}])`, 'gu');
+// «Wuppertaler Straße», «Alter Markt»: одно прилагательное и отдельное слово-окончание
+const PLACE_SEPARATE = new RegExp(String.raw`(?<![\p{L}\p{N}])(?!${NOT_A_NAME}[ \t])\p{Lu}${NAME_CHARS}*[ \t]+${SUFFIX_SEPARATE}(?![\p{L}\p{N}])`, 'gu');
+// обычные слова, которые оканчиваются так же, но улицами не являются
+const COMMON_NOUNS = /^(?:Rettungsgasse|Rettungsweg|Fluchtweg|Gehweg|Radweg|Radschnellweg|Fußweg|Fussweg|Feldweg|Waldweg|Wirtschaftsweg|Zufahrtsweg|Umweg|Hinweg|Rückweg|Rueckweg|Ausweg|Parkplatz|Rastplatz|Sportplatz|Spielplatz|Festplatz|Stellplatz|Arbeitsplatz|Weihnachtsmarkt|Wochenmarkt|Flohmarkt|Bahndamm|Schutzwall|Lärmschutzwall|Rettungsring|Schutzring)$/iu;
 
 export function textHash(title, description) {
   const s = `${title || ''}\u0000${description || ''}`;
@@ -72,13 +78,13 @@ function makeLocationVariants(locationName) {
 
 // Возвращает диапазоны названий, которые нельзя переводить.
 // Вместо специальных маркеров мы вообще не передаём эти фрагменты модели.
-function findProtectedSpans(text, locationName = '') {
+export function findProtectedSpans(text, locationName = '') {
   const source = String(text || '');
   if (!source) return [];
 
   const spans = [];
 
-  function collect(pattern) {
+  function collect(pattern, accept = () => true) {
     pattern.lastIndex = 0;
     let match;
 
@@ -87,6 +93,8 @@ function findProtectedSpans(text, locationName = '') {
         pattern.lastIndex++;
         continue;
       }
+
+      if (!accept(match[0])) continue;
 
       spans.push({
         start: match.index,
@@ -103,7 +111,8 @@ function findProtectedSpans(text, locationName = '') {
     collect(pattern);
   }
 
-  collect(PLACE_PATTERN);
+  collect(PLACE_JOINED, (m) => !COMMON_NOUNS.test(m));
+  collect(PLACE_SEPARATE);
 
   if (!spans.length) return [];
 
@@ -205,6 +214,16 @@ async function translatePlainText(env, text) {
   return translatedLines.join('\n');
 }
 
+// Фрагмент между названиями: пробелы по краям модель обрезает, поэтому возвращаем их сами,
+// а фрагменты без букв (запятая, пробел, цифры) модели не отправляем.
+async function translateSegment(env, seg) {
+  if (!/\p{L}/u.test(seg)) return seg;
+  const lead = seg.match(/^\s*/)[0];
+  const trail = seg.match(/\s*$/)[0];
+  const core = seg.slice(lead.length, seg.length - trail.length);
+  return lead + (await translatePlainText(env, core)) + trail;
+}
+
 async function translateText(env, text, locationName = '') {
   const source = String(text || '');
   if (!source.trim()) return '';
@@ -232,7 +251,7 @@ async function translateText(env, text, locationName = '') {
     // Переводим только обычный текст перед защищённым названием.
     if (span.start > cursor) {
       const plain = source.slice(cursor, span.start);
-      output.push(await translatePlainText(env, plain));
+      output.push(await translateSegment(env, plain));
     }
 
     // Название улицы или места вставляем без изменений.
@@ -242,10 +261,10 @@ async function translateText(env, text, locationName = '') {
 
   // Переводим остаток строки после последнего защищённого фрагмента.
   if (cursor < source.length) {
-    output.push(await translatePlainText(env, source.slice(cursor)));
+    output.push(await translateSegment(env, source.slice(cursor)));
   }
 
-  return output.join('').trim();
+  return output.join('').replace(/[ \t]{2,}/g, ' ').trim();
 }
 
 async function readTranslationRows(env, ids) {
@@ -434,6 +453,7 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
   let translatedCount = 0;
   let failed = 0;
   let lastError = null;
+  let streak = 0;
   const failures = [];
 
   for (const event of todo) {
@@ -465,10 +485,12 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
       );
 
       translatedCount++;
+      streak = 0;
 
       console.log(`[translate] OK ${event.id}`);
     } catch (error) {
       failed++;
+      streak++;
       lastError = error?.message || String(error);
 
       failures.push({
@@ -480,7 +502,9 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
         `[translate] ERROR ${event.id}: ${lastError}`
       );
 
-      // Не прерываем очередь из-за ошибки одного события.
+      // Одно сломанное событие очередь не останавливает, но три сбоя подряд значат, что модель недоступна
+      // или квота исчерпана: не тратим на это запросы, следующая попытка при следующем запуске.
+      if (streak >= 3) break;
     }
   }
 
