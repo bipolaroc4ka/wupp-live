@@ -6,8 +6,17 @@ import { ISO } from './util.js';
 
 // ---------- вспомогательное ----------
 
+// Список из ALLOWED_ORIGINS приводится к виду «схема://хост»: путь и слэш на конце отбрасываются,
+// поэтому значение «https://логин.github.io/репозиторий/» тоже сработает.
+function allowedList(env) {
+  return String(env.ALLOWED_ORIGINS || '*').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+    if (x === '*') return x;
+    try { return new URL(x).origin; } catch { return x.replace(/\/+$/, ''); }
+  });
+}
+
 function allowedOrigin(env, origin) {
-  const list = String(env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()).filter(Boolean);
+  const list = allowedList(env);
   if (list.includes('*')) return '*';
   return origin && list.includes(origin) ? origin : null;
 }
