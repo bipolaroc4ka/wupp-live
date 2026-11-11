@@ -9,7 +9,7 @@
   const TG = window.WL_TG;
   const TZ = 'Europe/Berlin';
   // Работы и перекрытия, идущие дольше этого срока, уходят на вкладку «Долгосрочные».
-  const LONG_TERM_DAYS = Number(CFG.LONG_TERM_DAYS) > 0 ? Number(CFG.LONG_TERM_DAYS) : 30;
+  const LONG_TERM_DAYS = Number(CFG.LONG_TERM_DAYS) > 0 ? Number(CFG.LONG_TERM_DAYS) : 1;
 
   // ---------- справочники ----------
   const GROUPS = ['emergency', 'traffic', 'roadworks', 'transit', 'infra', 'events'];
@@ -44,7 +44,7 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* хранилище недоступно: работаем без него */ } }
   };
   const state = {
-    lang: I18N[store.get('wl_lang')] ? store.get('wl_lang') : 'ru',
+    lang: I18N[store.get('wl_lang')] ? store.get('wl_lang') : 'de', // по умолчанию немецкий, выбор запоминается
     themePref: ['auto', 'light', 'dark'].includes(store.get('wl_theme')) ? store.get('wl_theme') : 'auto',
     hours: DEFAULT_HOURS,
     groupsOn: new Set(GROUPS),
@@ -56,6 +56,7 @@
     offline: false,
     loaded: false,
     selectedId: null,
+    showOriginal: false,
     known: new Set(),
     first: true,
     mapProblem: location.protocol === 'file:' ? 'fileMode' : null
@@ -215,11 +216,20 @@
 
   function inArea(ev) {
     const d = DISTRICTS.find((x) => x.id === state.district);
-    return !d || inDistrict(ev, d);
+    if (!d) return true;
+    if (ev.geo_precision === 'city') return true; // предупреждение на весь город касается любого района
+    return inDistrict(ev, d);
   }
   const pool = (tab) => state.events.filter((ev) => (isLongTerm(ev) ? 'long' : 'now') === tab && inArea(ev));
   const visibleEvents = () => pool(state.tab).filter((ev) => state.groupsOn.has(groupOf(ev.category))).sort(byImportance);
   const filterCount = () => (state.district ? 1 : 0) + (state.hours !== DEFAULT_HOURS ? 1 : 0) + (state.groupsOn.size < GROUPS.length ? 1 : 0);
+
+  // Машинный перевод есть только на русский и только если пришёл с сервера; оригинал всегда доступен.
+  function texts(ev, original) {
+    const tr = state.lang === 'ru' && !original && ev.title_ru;
+    return { title: tr ? ev.title_ru : ev.title, desc: tr ? (ev.description_ru || '') : (ev.description || ''), translated: !!tr };
+  }
+  const hasTranslation = (ev) => state.lang === 'ru' && !!ev.title_ru;
 
   // ---------- отрисовка ----------
   function applyI18n() {
@@ -286,8 +296,11 @@
         class: 'chip' + (counts[g] ? '' : ' empty'), type: 'button', 'aria-pressed': String(on), style: `--c:${GROUP_COLOR[g]}`
       }, ICON.forGroup(g, 16), t('g_' + g), counts[g] ? el('small', { text: String(counts[g]) }) : null);
       b.addEventListener('click', () => {
-        if (state.groupsOn.has(g)) state.groupsOn.delete(g); else state.groupsOn.add(g);
-        if (state.groupsOn.size === 0) GROUPS.forEach((x) => state.groupsOn.add(x));
+        // Все группы включены: тап показывает только выбранную. Иначе тап включает/выключает группу.
+        // Если выключили последнюю, снова показываем все.
+        if (state.groupsOn.size === GROUPS.length) state.groupsOn = new Set([g]);
+        else if (state.groupsOn.has(g)) { state.groupsOn.delete(g); if (!state.groupsOn.size) state.groupsOn = new Set(GROUPS); }
+        else state.groupsOn.add(g);
         TG.haptic('select');
         render();
       });
@@ -326,7 +339,7 @@
     const btn = el('button', { class: 'item', type: 'button', style: `--c:${GROUP_COLOR[g]}` },
       el('span', { class: 'ico' }, ICON.forCategory(ev.category, 19)),
       el('span', { class: 'body' },
-        el('span', { class: 't', text: ev.title }),
+        el('span', { class: 't', text: texts(ev).title }),
         el('span', { class: 'm' },
           el('span', { class: 'st ' + ev.status, text: t('stShort_' + ev.status) }),
           el('span', { text: listTimeText(ev) }),
@@ -481,9 +494,20 @@
       el('span', { class: 'badge', style: `color:${GROUP_COLOR[g]}` }, ICON.forCategory(ev.category, 15), t('c_' + ev.category)),
       el('span', { class: 'badge ' + ev.status, text: t('st_' + ev.status) }),
       ev.is_verified ? el('span', { class: 'badge official', text: t('official') }) : null);
-    $('#dTitle').textContent = ev.title;
-    $('#dDesc').textContent = ev.description || '';
-    $('#dDesc').hidden = !ev.description;
+    const tx = texts(ev, state.showOriginal);
+    $('#dTitle').textContent = tx.title;
+    $('#dDesc').textContent = tx.desc;
+    $('#dDesc').hidden = !tx.desc;
+    const tbox = $('#dTrans');
+    if (hasTranslation(ev)) {
+      const toggle = el('button', { type: 'button', class: 'linkbtn', text: state.showOriginal ? t('showTr') : t('showOrig') });
+      toggle.addEventListener('click', () => {
+        state.showOriginal = !state.showOriginal; refreshDetail();
+        const nb = $('#dTrans button'); if (nb) nb.focus({ preventScroll: true }); // кнопка пересоздаётся: возвращаем фокус
+      });
+      setKids(tbox, el('span', { text: (state.showOriginal ? t('origDe') : t('machTr')) + ' ' }), toggle);
+      tbox.hidden = false;
+    } else { tbox.textContent = ''; tbox.hidden = true; }
 
     // Срок действия: честно говорим, что даты окончания у нас нет, а не делаем вид, что событие актуально
     const note = $('#dNote');
@@ -552,6 +576,7 @@
     closeDropdowns();
     lastFocus = document.activeElement;
     state.selectedId = id;
+    state.showOriginal = false;
     refreshDetail();
     $('#detail').hidden = false;
     document.body.classList.add('has-detail');
