@@ -58,8 +58,9 @@ export function parseEventTime(text, publishedMs) {
   const pub = berlinYMD(publishedMs);
   let date = null;
 
-  // 1) Явная дата: 27.09.2026 / 30.08. / 19. September 2026
-  let m = text.match(/\b(\d{1,2})\.(\d{1,2})\.?(?:\s?(\d{4}))?(?!\d)(?!\s*Uhr)/);
+  // 1) Явная дата: 27.09.2026 / 30.08. / 19. September 2026 (точка после месяца обязательна:
+  //    иначе «2.5 Tonnen» или «1.3 km» читались бы как даты)
+  let m = text.match(/\b(\d{1,2})\.(\d{1,2})\.(?:\s?(\d{4}))?(?!\d)(?!\s*Uhr)/);
   if (m && +m[1] >= 1 && +m[1] <= 31 && +m[2] >= 1 && +m[2] <= 12) {
     date = { d: +m[1], m: +m[2], y: m[3] ? +m[3] : null };
   }
