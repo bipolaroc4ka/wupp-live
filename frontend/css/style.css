@@ -140,6 +140,8 @@ body.has-detail #sheet { visibility: hidden; }
 .badge.official { color: var(--text); }
 .detail h2 { margin: 0 0 8px; font-size: 19px; line-height: 1.25; }
 .d-desc { margin: 0 0 12px; color: var(--text); white-space: pre-line; line-height: 1.45; }
+.d-trans { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.linkbtn { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; }
 .d-note { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 14%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); font-size: 13.5px; line-height: 1.4; }
 .d-loc { margin: 0 0 14px; font-size: 14px; }
 .d-loc .note { color: var(--muted); font-size: 13px; margin-top: 2px; }
