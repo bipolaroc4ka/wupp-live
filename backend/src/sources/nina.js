@@ -14,13 +14,30 @@ const FEEDS = [
   'police'
 ];
 
-// Границы Вупперталя.
 // Координаты GeoJSON: [longitude, latitude].
+// Границы Вупперталя — приближённый городской прямоугольник.
 const CITY_BBOX = {
   west: 7.01,
   east: 7.32,
   south: 51.16,
   north: 51.33
+};
+
+// Приближённая область Nordrhein-Westfalen.
+// Используется как географический фильтр-кандидат, а не как
+// точная административная граница федеральной земли.
+const NRW_BBOX = {
+  west: 5.86,
+  east: 9.46,
+  south: 50.32,
+  north: 52.53
+};
+
+// Координаты Вупперталя — представительская точка
+// для региональных предупреждений на городской карте.
+const CITY_CENTER = {
+  longitude: 7.197,
+  latitude: 51.256
 };
 
 const CONCURRENCY = 5;
@@ -93,8 +110,12 @@ function getGermanInfo(detail) {
     : [];
 
   return (
-    infos.find((item) => item?.language?.toLowerCase() === 'de') ||
-    infos.find((item) => item?.language?.toLowerCase() === 'de-ls') ||
+    infos.find(
+      (item) => String(item?.language || '').toLowerCase() === 'de'
+    ) ||
+    infos.find(
+      (item) => String(item?.language || '').toLowerCase() === 'de-ls'
+    ) ||
     infos[0] ||
     {}
   );
@@ -168,7 +189,7 @@ function normalizeFeedItem(item) {
 }
 
 // --------------------------------------------------
-// География: проверка пересечения GeoJSON с Wuppertal
+// География
 // --------------------------------------------------
 
 function isValidPoint(point) {
@@ -199,14 +220,14 @@ function collectPoints(value, result = []) {
   return result;
 }
 
-function pointInsideBbox(point) {
+function pointInsideBbox(point, bbox) {
   const [longitude, latitude] = point;
 
   return (
-    longitude >= CITY_BBOX.west &&
-    longitude <= CITY_BBOX.east &&
-    latitude >= CITY_BBOX.south &&
-    latitude <= CITY_BBOX.north
+    longitude >= bbox.west &&
+    longitude <= bbox.east &&
+    latitude >= bbox.south &&
+    latitude <= bbox.north
   );
 }
 
@@ -257,6 +278,54 @@ function pointOnSegment(point, a, b) {
   return dot <= lengthSquared;
 }
 
+function orientation(a, b, c) {
+  return (
+    (b[1] - a[1]) * (c[0] - b[0]) -
+    (b[0] - a[0]) * (c[1] - b[1])
+  );
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+
+  if (
+    ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+    ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))
+  ) {
+    return true;
+  }
+
+  return (
+    pointOnSegment(c, a, b) ||
+    pointOnSegment(d, a, b) ||
+    pointOnSegment(a, c, d) ||
+    pointOnSegment(b, c, d)
+  );
+}
+
+function segmentIntersectsBbox(a, b, bbox) {
+  const corners = [
+    [bbox.west, bbox.south],
+    [bbox.east, bbox.south],
+    [bbox.east, bbox.north],
+    [bbox.west, bbox.north]
+  ];
+
+  for (let i = 0; i < corners.length; i++) {
+    const c = corners[i];
+    const d = corners[(i + 1) % corners.length];
+
+    if (segmentsIntersect(a, b, c, d)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function pointInRing(point, ring) {
   if (!Array.isArray(ring) || ring.length < 3) {
     return false;
@@ -289,67 +358,22 @@ function pointInRing(point, ring) {
   return inside;
 }
 
-function orientation(a, b, c) {
-  return (
-    (b[1] - a[1]) * (c[0] - b[0]) -
-    (b[0] - a[0]) * (c[1] - b[1])
-  );
-}
-
-function segmentsIntersect(a, b, c, d) {
-  const o1 = orientation(a, b, c);
-  const o2 = orientation(a, b, d);
-  const o3 = orientation(c, d, a);
-  const o4 = orientation(c, d, b);
-
-  if (
-    ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
-    ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))
-  ) {
-    return true;
-  }
-
-  return (
-    pointOnSegment(c, a, b) ||
-    pointOnSegment(d, a, b) ||
-    pointOnSegment(a, c, d) ||
-    pointOnSegment(b, c, d)
-  );
-}
-
-function segmentIntersectsBbox(a, b) {
-  const corners = [
-    [CITY_BBOX.west, CITY_BBOX.south],
-    [CITY_BBOX.east, CITY_BBOX.south],
-    [CITY_BBOX.east, CITY_BBOX.north],
-    [CITY_BBOX.west, CITY_BBOX.north]
-  ];
-
-  for (let i = 0; i < corners.length; i++) {
-    const c = corners[i];
-    const d = corners[(i + 1) % corners.length];
-
-    if (segmentsIntersect(a, b, c, d)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function ringIntersectsBbox(ring) {
+function ringIntersectsBbox(ring, bbox) {
   if (!Array.isArray(ring) || ring.length < 3) {
     return false;
   }
 
-  // Одна из вершин находится внутри Вупперталя.
+  // Хотя бы одна вершина находится внутри области.
   for (const point of ring) {
-    if (isValidPoint(point) && pointInsideBbox(point)) {
+    if (
+      isValidPoint(point) &&
+      pointInsideBbox(point, bbox)
+    ) {
       return true;
     }
   }
 
-  // Граница полигона пересекает границу города.
+  // Контур полигона пересекает границу области.
   for (let i = 0; i < ring.length - 1; i++) {
     const a = ring[i];
     const b = ring[i + 1];
@@ -357,66 +381,71 @@ function ringIntersectsBbox(ring) {
     if (
       isValidPoint(a) &&
       isValidPoint(b) &&
-      segmentIntersectsBbox(a, b)
+      segmentIntersectsBbox(a, b, bbox)
     ) {
       return true;
     }
   }
 
-  // Город целиком находится внутри полигона.
+  // Область целиком находится внутри полигона.
   const center = [
-    (CITY_BBOX.west + CITY_BBOX.east) / 2,
-    (CITY_BBOX.south + CITY_BBOX.north) / 2
+    (bbox.west + bbox.east) / 2,
+    (bbox.south + bbox.north) / 2
   ];
 
   if (pointInRing(center, ring)) return true;
 
   const corners = [
-    [CITY_BBOX.west, CITY_BBOX.south],
-    [CITY_BBOX.east, CITY_BBOX.south],
-    [CITY_BBOX.east, CITY_BBOX.north],
-    [CITY_BBOX.west, CITY_BBOX.north]
+    [bbox.west, bbox.south],
+    [bbox.east, bbox.south],
+    [bbox.east, bbox.north],
+    [bbox.west, bbox.north]
   ];
 
   return corners.some((point) => pointInRing(point, ring));
 }
 
-function polygonIntersectsBbox(rings) {
+function polygonIntersectsBbox(rings, bbox) {
   if (!Array.isArray(rings) || !rings.length) {
     return false;
   }
 
-  // Для обычного CAP-полигона первая граница — внешний контур.
-  return ringIntersectsBbox(rings[0]);
+  // В CAP GeoJSON первый контур — внешний.
+  return ringIntersectsBbox(rings[0], bbox);
 }
 
-function geometryIntersectsBbox(geometry) {
+function geometryIntersectsBbox(geometry, bbox) {
   if (!geometry || typeof geometry !== 'object') {
     return false;
   }
 
   if (geometry.type === 'GeometryCollection') {
     return Array.isArray(geometry.geometries) &&
-      geometry.geometries.some(geometryIntersectsBbox);
+      geometry.geometries.some((item) =>
+        geometryIntersectsBbox(item, bbox)
+      );
   }
 
   const points = collectPoints(geometry.coordinates);
   const bounds = bboxOfPoints(points);
 
-  if (!bounds || !bboxesIntersect(bounds, CITY_BBOX)) {
+  if (!bounds || !bboxesIntersect(bounds, bbox)) {
     return false;
   }
 
-  if (points.some(pointInsideBbox)) {
+  if (points.some((point) => pointInsideBbox(point, bbox))) {
     return true;
   }
 
   if (geometry.type === 'Polygon') {
-    return polygonIntersectsBbox(geometry.coordinates);
+    return polygonIntersectsBbox(geometry.coordinates, bbox);
   }
 
   if (geometry.type === 'MultiPolygon') {
-    return geometry.coordinates.some(polygonIntersectsBbox);
+    return Array.isArray(geometry.coordinates) &&
+      geometry.coordinates.some((polygon) =>
+        polygonIntersectsBbox(polygon, bbox)
+      );
   }
 
   if (
@@ -434,7 +463,7 @@ function geometryIntersectsBbox(geometry) {
         if (
           isValidPoint(line[i]) &&
           isValidPoint(line[i + 1]) &&
-          segmentIntersectsBbox(line[i], line[i + 1])
+          segmentIntersectsBbox(line[i], line[i + 1], bbox)
         ) {
           return true;
         }
@@ -444,11 +473,11 @@ function geometryIntersectsBbox(geometry) {
     });
   }
 
-  // Для Point и MultiPoint достаточно проверки координат.
+  // Point и MultiPoint уже проверены выше.
   return false;
 }
 
-function geoJsonIntersectsCity(geojson) {
+function geoJsonIntersectsBbox(geojson, bbox) {
   if (!geojson || typeof geojson !== 'object') {
     return false;
   }
@@ -456,33 +485,36 @@ function geoJsonIntersectsCity(geojson) {
   if (geojson.type === 'FeatureCollection') {
     return Array.isArray(geojson.features) &&
       geojson.features.some((feature) =>
-        geometryIntersectsBbox(feature?.geometry)
+        geometryIntersectsBbox(feature?.geometry, bbox)
       );
   }
 
   if (geojson.type === 'Feature') {
-    return geometryIntersectsBbox(geojson.geometry);
+    return geometryIntersectsBbox(geojson.geometry, bbox);
   }
 
-  return geometryIntersectsBbox(geojson);
+  return geometryIntersectsBbox(geojson, bbox);
+}
+
+function getGeoJsonGeometries(geojson) {
+  if (geojson?.type === 'FeatureCollection') {
+    return (geojson.features || [])
+      .map((feature) => feature?.geometry)
+      .filter(Boolean);
+  }
+
+  if (geojson?.type === 'Feature') {
+    return geojson.geometry ? [geojson.geometry] : [];
+  }
+
+  return geojson?.type ? [geojson] : [];
 }
 
 function getGeometryCenter(geojson) {
-  const geometries = [];
-
-  if (geojson?.type === 'FeatureCollection') {
-    for (const feature of geojson.features || []) {
-      if (feature?.geometry) geometries.push(feature.geometry);
-    }
-  } else if (geojson?.type === 'Feature') {
-    if (geojson.geometry) geometries.push(geojson.geometry);
-  } else if (geojson?.type) {
-    geometries.push(geojson);
-  }
-
-  const points = geometries.flatMap((geometry) =>
-    collectPoints(geometry.coordinates)
-  );
+  const points = getGeoJsonGeometries(geojson)
+    .flatMap((geometry) =>
+      collectPoints(geometry.coordinates)
+    );
 
   const bounds = bboxOfPoints(points);
 
@@ -491,6 +523,91 @@ function getGeometryCenter(geojson) {
   return {
     longitude: (bounds.west + bounds.east) / 2,
     latitude: (bounds.south + bounds.north) / 2
+  };
+}
+
+// --------------------------------------------------
+// Определение географической релевантности
+// --------------------------------------------------
+
+function getAreaNames(info) {
+  const areas = Array.isArray(info?.area)
+    ? info.area
+    : [];
+
+  return [
+    ...new Set(
+      areas
+        .map((area) => cleanText(area?.areaDesc))
+        .filter(Boolean)
+    )
+  ];
+}
+
+function isNationalWarning(areaNames, title, description) {
+  const value = [
+    ...areaNames,
+    title || '',
+    description || ''
+  ].join(' ').toLowerCase();
+
+  return /bundesweit|bundesgebiet|ganz deutschland|deutschlandweit|gesamte bundesrepublik|in ganz deutschland/.test(value);
+}
+
+function getGeographicScope(geojson, areaNames, title, description) {
+  // Наивысший приоритет — непосредственно Вупперталь.
+  if (geoJsonIntersectsBbox(geojson, CITY_BBOX)) {
+    return 'city';
+  }
+
+  // Национальное предупреждение принимается только при условии,
+  // что его геометрия также затрагивает территорию NRW.
+  const intersectsNRW = geoJsonIntersectsBbox(
+    geojson,
+    NRW_BBOX
+  );
+
+  if (!intersectsNRW) {
+    return null;
+  }
+
+  if (isNationalWarning(areaNames, title, description)) {
+    return 'national';
+  }
+
+  return 'region';
+}
+
+function getEventCoordinates(geojson, scope) {
+  // Для региональных и национальных предупреждений используем
+  // точку Вупперталя как представительскую точку на городской карте.
+  if (scope !== 'city') {
+    return {
+      latitude: CITY_CENTER.latitude,
+      longitude: CITY_CENTER.longitude
+    };
+  }
+
+  const center = getGeometryCenter(geojson);
+
+  if (
+    center &&
+    pointInsideBbox(
+      [center.longitude, center.latitude],
+      CITY_BBOX
+    )
+  ) {
+    return {
+      latitude: center.latitude,
+      longitude: center.longitude
+    };
+  }
+
+  // Если центр большой геометрии находится за пределами города,
+  // не размещаем локальное предупреждение в случайном месте.
+  return {
+    latitude: CITY_CENTER.latitude,
+    longitude: CITY_CENTER.longitude
   };
 }
 
@@ -533,7 +650,7 @@ function classify(text, provider, capCategory) {
 // CAP: подробности предупреждения
 // --------------------------------------------------
 
-function buildDescription(info, raw) {
+function buildDescription(info, areaNames) {
   const sections = [];
 
   const description = cleanText(info?.description);
@@ -543,21 +660,14 @@ function buildDescription(info, raw) {
     sections.push(description);
   }
 
-  if (
-    instruction &&
-    instruction !== description
-  ) {
+  if (instruction && instruction !== description) {
     sections.push(`Рекомендации:\n${instruction}`);
   }
 
-  const area = Array.isArray(info?.area)
-    ? info.area
-        .map((item) => cleanText(item?.areaDesc))
-        .filter(Boolean)
-    : [];
-
-  if (area.length) {
-    sections.push(`Затронутая территория:\n${[...new Set(area)].join('; ')}`);
+  if (areaNames.length) {
+    sections.push(
+      `Затронутая территория:\n${areaNames.join('; ')}`
+    );
   }
 
   const contact = cleanText(info?.contact);
@@ -572,13 +682,9 @@ function buildDescription(info, raw) {
     sections.push(`Дополнительная информация: ${website}`);
   }
 
-  const result = sections.join('\n\n');
-
-  if (result) return truncate(result);
-
   return truncate(
+    sections.join('\n\n') ||
     firstText(
-      raw?.i18nTitle?.de,
       info?.headline,
       info?.event,
       'Официальное предупреждение'
@@ -592,8 +698,7 @@ function buildItem(raw, detail, geojson) {
   const msgType = String(detail.msgType || raw.type || '')
     .toLowerCase();
 
-  // Отменённые предупреждения не должны снова становиться активными.
-  // Исчезновение из ленты будет обработано syncSource.
+  // Отменённые предупреждения не создаём как активные.
   if (msgType === 'cancel') return null;
 
   if (
@@ -619,17 +724,23 @@ function buildItem(raw, detail, geojson) {
     raw.provider
   );
 
-  const areaNames = Array.isArray(info.area)
-    ? info.area
-        .map((area) => cleanText(area?.areaDesc))
-        .filter(Boolean)
-    : [];
+  const areaNames = getAreaNames(info);
 
-  const locationName = areaNames.length
-    ? [...new Set(areaNames)].join('; ')
-    : CITY.name;
+  const description = buildDescription(info, areaNames);
 
-  const center = getGeometryCenter(geojson);
+  const scope = getGeographicScope(
+    geojson,
+    areaNames,
+    title,
+    description
+  );
+
+  if (!scope) return null;
+
+  const coordinates = getEventCoordinates(
+    geojson,
+    scope
+  );
 
   const startDate = firstText(
     info.onset,
@@ -648,8 +759,6 @@ function buildItem(raw, detail, geojson) {
     raw.expiresDate
   );
 
-  const description = buildDescription(info, raw);
-
   const category = classify(
     `${title} ${description}`,
     provider,
@@ -663,6 +772,22 @@ function buildItem(raw, detail, geojson) {
     'https://warnung.bund.de/'
   );
 
+  let locationName;
+
+  if (scope === 'city') {
+    locationName = areaNames.length
+      ? areaNames.join('; ')
+      : CITY.name;
+  } else if (scope === 'national') {
+    locationName = areaNames.length
+      ? `Deutschland · ${areaNames.join('; ')}`
+      : 'Deutschland';
+  } else {
+    locationName = areaNames.length
+      ? `Nordrhein-Westfalen · ${areaNames.join('; ')}`
+      : 'Nordrhein-Westfalen';
+  }
+
   return {
     source_event_id: raw.id,
     publisher: provider || 'NINA / BBK',
@@ -671,9 +796,12 @@ function buildItem(raw, detail, geojson) {
     category,
     source_url: sourceUrl,
 
-    latitude: center?.latitude ?? null,
-    longitude: center?.longitude ?? null,
-    geo_precision: center ? 'area' : 'city',
+    latitude: coordinates.latitude,
+    longitude: coordinates.longitude,
+
+    // Важно: это географическая область предупреждения,
+    // а не точный адрес или координата источника.
+    geo_precision: 'area',
     location_name: locationName,
 
     event_time: parseDate(startDate),
@@ -681,8 +809,8 @@ function buildItem(raw, detail, geojson) {
     published_at: parseDate(publishedAt),
 
     status: 'ACTIVE',
-    status_reason: 'listed_in_nina_mapdata_and_geojson',
-    confidence: 0.95,
+    status_reason: `nina_${scope}_warning`,
+    confidence: scope === 'city' ? 0.95 : 0.85,
     is_verified: 1,
 
     severity: firstText(
@@ -766,8 +894,6 @@ async function loadWarning(raw) {
 // --------------------------------------------------
 
 export async function run(ctx) {
-  const env = ctx.env;
-
   const feedResults = await Promise.all(
     FEEDS.map(async (feed) => {
       const url = `${BASE_URL}/${feed}/mapData.json`;
@@ -777,7 +903,9 @@ export async function run(ctx) {
         const array = extractArray(result?.json);
 
         if (!array) {
-          throw new Error(`Неожиданный формат ${feed}/mapData.json`);
+          throw new Error(
+            `Неожиданный формат ${feed}/mapData.json`
+          );
         }
 
         return {
@@ -802,9 +930,11 @@ export async function run(ctx) {
     })
   );
 
+  // Полная синхронизация допустима только при успешном
+  // получении всех шести лент и всех предупреждений.
   let complete = feedResults.every((result) => result.ok);
 
-  // Дедупликация предупреждений по идентификатору.
+  // Дедупликация по идентификатору.
   const warningsById = new Map();
 
   for (const feed of feedResults) {
@@ -816,8 +946,6 @@ export async function run(ctx) {
         continue;
       }
 
-      // Если один ID присутствует в нескольких лентах,
-      // оставляем запись с более высокой версией.
       if (
         Number(item.version || 0) >
         Number(existing.version || 0)
@@ -845,8 +973,12 @@ export async function run(ctx) {
 
   let loadedCount = 0;
   let failedCount = 0;
-  let outsideCityCount = 0;
+  let outsideNRWCount = 0;
+  let cityCount = 0;
+  let regionCount = 0;
+  let nationalCount = 0;
   let cancelledCount = 0;
+  let inactiveCount = 0;
 
   for (const result of loaded) {
     if (!result || result.error) {
@@ -865,30 +997,67 @@ export async function run(ctx) {
 
     const { raw, detail, geojson } = result;
 
-    const msgType = String(detail?.msgType || raw.type || '')
-      .toLowerCase();
+    const msgType = String(
+      detail?.msgType || raw.type || ''
+    ).toLowerCase();
 
     if (msgType === 'cancel') {
       cancelledCount++;
       continue;
     }
 
-    // Без корректной геометрии событие не попадёт в базу.
-    // Геометрия уже загружена, проверяем её пересечение с городом.
-    if (!geoJsonIntersectsCity(geojson)) {
-      outsideCityCount++;
+    if (
+      detail.status &&
+      String(detail.status).toLowerCase() !== 'actual'
+    ) {
+      inactiveCount++;
+      continue;
+    }
+
+    const info = getGermanInfo(detail);
+    const areaNames = getAreaNames(info);
+
+    const title = firstText(
+      info.headline,
+      raw.i18nTitle?.de,
+      info.event,
+      'Amtliche Warnung'
+    );
+
+    const description = buildDescription(info, areaNames);
+
+    const scope = getGeographicScope(
+      geojson,
+      areaNames,
+      title,
+      description
+    );
+
+    if (!scope) {
+      outsideNRWCount++;
       continue;
     }
 
     const item = buildItem(raw, detail, geojson);
 
-    if (item) {
-      items.push(item);
+    if (!item) {
+      inactiveCount++;
+      continue;
+    }
+
+    items.push(item);
+
+    if (scope === 'city') {
+      cityCount++;
+    } else if (scope === 'region') {
+      regionCount++;
+    } else if (scope === 'national') {
+      nationalCount++;
     }
   }
 
-  // Важно: если хотя бы один запрос завершился ошибкой,
-  // нельзя разрешать syncSource закрывать отсутствующие события.
+  // Если хотя бы один запрос завершился ошибкой,
+  // отсутствующие события не должны закрываться.
   const syncOptions = {
     resolveMissing: complete,
     resolvedScopes: null,
@@ -898,9 +1067,13 @@ export async function run(ctx) {
   console.log(
     `[nina] Загружено: ${loadedCount}; ` +
     `ошибок: ${failedCount}; ` +
-    `за пределами Вупперталя: ${outsideCityCount}; ` +
+    `вне NRW: ${outsideNRWCount}; ` +
     `отменено: ${cancelledCount}; ` +
-    `для Вупперталя: ${items.length}; ` +
+    `неактивно: ${inactiveCount}; ` +
+    `Вупперталь: ${cityCount}; ` +
+    `NRW: ${regionCount}; ` +
+    `Германия: ${nationalCount}; ` +
+    `всего для проекта: ${items.length}; ` +
     `resolveMissing=${complete}`
   );
 
@@ -943,7 +1116,13 @@ export async function probe(ctx) {
 
   return {
     city: CITY.name,
-    bbox: CITY_BBOX,
+    cityBbox: CITY_BBOX,
+    nrwBbox: NRW_BBOX,
+    geographicPolicy: {
+      city: 'Warnings intersecting Wuppertal',
+      region: 'Warnings intersecting NRW',
+      national: 'Germany-wide warnings only when their geometry intersects NRW'
+    },
     feeds: results
   };
 }
