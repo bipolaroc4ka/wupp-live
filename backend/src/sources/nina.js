@@ -1,6 +1,3 @@
- // Wuppertal Live — NINA / BBK / DWD / MoWaS / KATWARN / BIWAPP / LHP / Polizei.
-// Dashboard + mapData + CAP + GeoJSON.
-// Существующая схема events.js остаётся без изменений.
 
 import { CITY } from '../config.js';
 import { fetchJson } from '../util.js';
@@ -8,21 +5,17 @@ import { syncSource } from '../events.js';
 
 const BASE_URL = 'https://warnung.bund.de/api31';
 
-const DETAIL_CONCURRENCY = 5;
-const GEO_CONCURRENCY = 5;
-const MAX_DESCRIPTION = 12000;
-
-const MAP_SOURCES = [
-  { id: 'mowas', name: 'MoWaS' },
-  { id: 'dwd', name: 'DWD' },
-  { id: 'katwarn', name: 'KATWARN' },
-  { id: 'biwapp', name: 'BIWAPP' },
-  { id: 'lhp', name: 'LHP' },
-  { id: 'police', name: 'Polizei' }
+const FEEDS = [
+  'mowas',
+  'dwd',
+  'katwarn',
+  'biwapp',
+  'lhp',
+  'police'
 ];
 
-// Приблизительная граница Wuppertal.
-// GeoJSON проверяется на пересечение с этой областью.
+// Границы Вупперталя.
+// Координаты GeoJSON: [longitude, latitude].
 const CITY_BBOX = {
   west: 7.01,
   east: 7.32,
@@ -30,848 +23,927 @@ const CITY_BBOX = {
   north: 51.33
 };
 
+const CONCURRENCY = 5;
+const MAX_DESCRIPTION = 12000;
+
 export const meta = {
   id: 'nina',
-  name: 'NINA / BBK',
+  name: 'NINA (BBK, DWD, MOWAS, KATWARN, BIWAPP, LHP, Polizei)',
   intervalSec: 300,
   cron: '*/5 * * * *',
   group: 'warning'
 };
 
-// -------------------- helpers --------------------
+// --------------------------------------------------
+// Общие функции
+// --------------------------------------------------
 
-function clean(value) {
-  if (value == null) return null;
+function cleanText(value) {
+  if (value == null) return '';
 
-  const text = String(value)
+  return String(value)
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
-    .replace(/<\/li>\s*<li[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<\/p\s*>/gi, '\n\n')
+    .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
     .replace(/\r/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
-
-  return text || null;
 }
 
-function first(...values) {
+function truncate(value, max = MAX_DESCRIPTION) {
+  const text = cleanText(value);
+
+  if (text.length <= max) return text;
+
+  return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+function firstText(...values) {
   for (const value of values) {
-    if (value == null) continue;
-
-    if (typeof value === 'string' && !value.trim()) continue;
-
-    return value;
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
   }
 
   return null;
 }
 
-function arr(value) {
-  if (Array.isArray(value)) return value;
-  return value == null ? [] : [value];
-}
-
-function iso(value) {
+function parseDate(value) {
   if (!value) return null;
 
-  const timestamp = Date.parse(value);
+  const date = new Date(value);
 
-  return Number.isFinite(timestamp)
-    ? new Date(timestamp).toISOString()
-    : null;
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString();
 }
 
-function truncateText(value, max = MAX_DESCRIPTION) {
-  const text = clean(value);
-
-  if (!text) return null;
-
-  return text.length > max
-    ? text.slice(0, max - 1).trimEnd() + '…'
-    : text;
-}
-
-function ars(env) {
-  return /^\d{12}$/.test(env.NINA_ARS || '')
-    ? env.NINA_ARS
-    : CITY.ars;
-}
-
-function dashboardUrl(env) {
-  return `${BASE_URL}/dashboard/${ars(env)}.json`;
-}
-
-function mapDataUrl(source) {
-  return `${BASE_URL}/${source}/mapData.json`;
-}
-
-function detailUrl(id) {
-  return `${BASE_URL}/warnings/${encodeURIComponent(id)}.json`;
-}
-
-function geoJsonUrl(id) {
-  return `${BASE_URL}/warnings/${encodeURIComponent(id)}.geojson`;
-}
-
-function officialUrl(id) {
-  return `https://warnung.bund.de/meldung/${encodeURIComponent(id)}`;
-}
-
-function warningId(item) {
-  return first(item?.id, item?.identifier, item?.payload?.id);
-}
-
-// -------------------- CAP parsing --------------------
-
-function getInfo(detail) {
-  const info = first(
-    detail?.info,
-    detail?.payload?.info,
-    detail?.warning?.info
-  );
-
-  if (!Array.isArray(info)) return info || {};
+function getGermanInfo(detail) {
+  const infos = Array.isArray(detail?.info)
+    ? detail.info
+    : [];
 
   return (
-    info.find((x) =>
-      String(x?.language || '').toUpperCase().startsWith('DE')
-    ) ||
-    info[0] ||
+    infos.find((item) => item?.language?.toLowerCase() === 'de') ||
+    infos.find((item) => item?.language?.toLowerCase() === 'de-ls') ||
+    infos[0] ||
     {}
   );
 }
 
-function getDashboardData(item) {
-  return item?.payload?.data || item?.data || {};
+function getParameter(info, name) {
+  const parameters = Array.isArray(info?.parameter)
+    ? info.parameter
+    : [];
+
+  const item = parameters.find(
+    (parameter) => parameter?.valueName === name
+  );
+
+  return item?.value ?? null;
 }
 
-function getMsgType(item, detail) {
-  return String(first(
-    detail?.msgType,
-    item?.type,
-    item?.payload?.type,
-    getDashboardData(item)?.msgType
-  ) || 'Alert').toUpperCase();
+// --------------------------------------------------
+// Получение записей из mapData
+// --------------------------------------------------
+
+function extractArray(value, depth = 0) {
+  if (Array.isArray(value)) return value;
+
+  if (!value || typeof value !== 'object' || depth > 4) {
+    return null;
+  }
+
+  const preferredKeys = [
+    'warnings',
+    'items',
+    'data',
+    'features',
+    'results'
+  ];
+
+  for (const key of preferredKeys) {
+    if (Array.isArray(value[key])) {
+      return value[key];
+    }
+  }
+
+  for (const child of Object.values(value)) {
+    if (Array.isArray(child)) {
+      return child;
+    }
+  }
+
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') {
+      const result = extractArray(child, depth + 1);
+
+      if (result) return result;
+    }
+  }
+
+  return null;
 }
 
-function getTitle(item, detail, info) {
-  const data = getDashboardData(item);
+function normalizeFeedItem(item) {
+  if (!item || typeof item !== 'object') return null;
 
-  return clean(first(
-    info?.headline,
-    item?.i18nTitle?.de,
-    data?.headline,
-    item?.headline,
-    ...Object.values(item?.i18nTitle || {})
-  ));
-}
+  const id = firstText(item.id, item.identifier);
 
-function getProvider(item, detail, source) {
-  const data = getDashboardData(item);
+  if (!id) return null;
 
-  // CAP sender — технический идентификатор организации.
-  // provider — название источника предупреждения.
   return {
-    provider: clean(first(
-      data?.provider,
-      item?.provider,
-      source?.name,
-      'BBK'
-    )),
-    sender: clean(first(
-      detail?.senderName,
-      detail?.sender
-    ))
+    ...item,
+    id
   };
 }
 
-function getAreas(info) {
-  return arr(info?.area)
-    .map((area) => clean(area?.areaDesc))
-    .filter(Boolean);
+// --------------------------------------------------
+// География: проверка пересечения GeoJSON с Wuppertal
+// --------------------------------------------------
+
+function isValidPoint(point) {
+  return (
+    Array.isArray(point) &&
+    point.length >= 2 &&
+    Number.isFinite(Number(point[0])) &&
+    Number.isFinite(Number(point[1]))
+  );
 }
 
-function getParameters(info) {
-  return arr(info?.parameter)
-    .filter((p) => p && typeof p === 'object')
-    .map((p) => ({
-      name: clean(p.valueName),
-      value: clean(p.value)
-    }))
-    .filter((p) => p.name || p.value);
+function collectPoints(value, result = []) {
+  if (!Array.isArray(value)) return result;
+
+  if (isValidPoint(value)) {
+    result.push([
+      Number(value[0]),
+      Number(value[1])
+    ]);
+
+    return result;
+  }
+
+  for (const child of value) {
+    collectPoints(child, result);
+  }
+
+  return result;
 }
 
-function getCategories(info) {
-  return arr(info?.category)
-    .map(clean)
-    .filter(Boolean);
+function pointInsideBbox(point) {
+  const [longitude, latitude] = point;
+
+  return (
+    longitude >= CITY_BBOX.west &&
+    longitude <= CITY_BBOX.east &&
+    latitude >= CITY_BBOX.south &&
+    latitude <= CITY_BBOX.north
+  );
 }
 
-// -------------------- classification --------------------
+function bboxOfPoints(points) {
+  if (!points.length) return null;
 
-function classify(title, event, categories, provider) {
-  const text = [
-    title,
-    event,
-    ...categories,
-    provider
-  ].join(' ').toLowerCase();
+  let west = Infinity;
+  let east = -Infinity;
+  let south = Infinity;
+  let north = -Infinity;
 
-  if (/starkregen|sturzflut|flash flood/.test(text)) {
-    return 'heavy_rain';
+  for (const [longitude, latitude] of points) {
+    west = Math.min(west, longitude);
+    east = Math.max(east, longitude);
+    south = Math.min(south, latitude);
+    north = Math.max(north, latitude);
   }
 
-  if (/hochwasser|überschwemm|ueberschwemm|überflutung|ueberflutung|pegel/.test(text)) {
-    return 'flood';
+  return { west, east, south, north };
+}
+
+function bboxesIntersect(a, b) {
+  return !(
+    a.east < b.west ||
+    a.west > b.east ||
+    a.north < b.south ||
+    a.south > b.north
+  );
+}
+
+function pointOnSegment(point, a, b) {
+  const cross =
+    (point[1] - a[1]) * (b[0] - a[0]) -
+    (point[0] - a[0]) * (b[1] - a[1]);
+
+  if (Math.abs(cross) > 1e-10) return false;
+
+  const dot =
+    (point[0] - a[0]) * (b[0] - a[0]) +
+    (point[1] - a[1]) * (b[1] - a[1]);
+
+  if (dot < 0) return false;
+
+  const lengthSquared =
+    (b[0] - a[0]) ** 2 +
+    (b[1] - a[1]) ** 2;
+
+  return dot <= lengthSquared;
+}
+
+function pointInRing(point, ring) {
+  if (!Array.isArray(ring) || ring.length < 3) {
+    return false;
   }
 
-  if (/orkan|sturm|windbö|windboe/.test(text)) {
-    return 'storm';
+  let inside = false;
+
+  for (
+    let i = 0, j = ring.length - 1;
+    i < ring.length;
+    j = i++
+  ) {
+    const a = ring[i];
+    const b = ring[j];
+
+    if (!isValidPoint(a) || !isValidPoint(b)) continue;
+
+    if (pointOnSegment(point, a, b)) return true;
+
+    const intersects =
+      (a[1] > point[1]) !== (b[1] > point[1]) &&
+      point[0] <
+        ((b[0] - a[0]) * (point[1] - a[1])) /
+          (b[1] - a[1]) +
+          a[0];
+
+    if (intersects) inside = !inside;
   }
 
-  if (/schnee|glätte|glaette|eisregen|frost/.test(text)) {
+  return inside;
+}
+
+function orientation(a, b, c) {
+  return (
+    (b[1] - a[1]) * (c[0] - b[0]) -
+    (b[0] - a[0]) * (c[1] - b[1])
+  );
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+
+  if (
+    ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+    ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))
+  ) {
+    return true;
+  }
+
+  return (
+    pointOnSegment(c, a, b) ||
+    pointOnSegment(d, a, b) ||
+    pointOnSegment(a, c, d) ||
+    pointOnSegment(b, c, d)
+  );
+}
+
+function segmentIntersectsBbox(a, b) {
+  const corners = [
+    [CITY_BBOX.west, CITY_BBOX.south],
+    [CITY_BBOX.east, CITY_BBOX.south],
+    [CITY_BBOX.east, CITY_BBOX.north],
+    [CITY_BBOX.west, CITY_BBOX.north]
+  ];
+
+  for (let i = 0; i < corners.length; i++) {
+    const c = corners[i];
+    const d = corners[(i + 1) % corners.length];
+
+    if (segmentsIntersect(a, b, c, d)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function ringIntersectsBbox(ring) {
+  if (!Array.isArray(ring) || ring.length < 3) {
+    return false;
+  }
+
+  // Одна из вершин находится внутри Вупперталя.
+  for (const point of ring) {
+    if (isValidPoint(point) && pointInsideBbox(point)) {
+      return true;
+    }
+  }
+
+  // Граница полигона пересекает границу города.
+  for (let i = 0; i < ring.length - 1; i++) {
+    const a = ring[i];
+    const b = ring[i + 1];
+
+    if (
+      isValidPoint(a) &&
+      isValidPoint(b) &&
+      segmentIntersectsBbox(a, b)
+    ) {
+      return true;
+    }
+  }
+
+  // Город целиком находится внутри полигона.
+  const center = [
+    (CITY_BBOX.west + CITY_BBOX.east) / 2,
+    (CITY_BBOX.south + CITY_BBOX.north) / 2
+  ];
+
+  if (pointInRing(center, ring)) return true;
+
+  const corners = [
+    [CITY_BBOX.west, CITY_BBOX.south],
+    [CITY_BBOX.east, CITY_BBOX.south],
+    [CITY_BBOX.east, CITY_BBOX.north],
+    [CITY_BBOX.west, CITY_BBOX.north]
+  ];
+
+  return corners.some((point) => pointInRing(point, ring));
+}
+
+function polygonIntersectsBbox(rings) {
+  if (!Array.isArray(rings) || !rings.length) {
+    return false;
+  }
+
+  // Для обычного CAP-полигона первая граница — внешний контур.
+  return ringIntersectsBbox(rings[0]);
+}
+
+function geometryIntersectsBbox(geometry) {
+  if (!geometry || typeof geometry !== 'object') {
+    return false;
+  }
+
+  if (geometry.type === 'GeometryCollection') {
+    return Array.isArray(geometry.geometries) &&
+      geometry.geometries.some(geometryIntersectsBbox);
+  }
+
+  const points = collectPoints(geometry.coordinates);
+  const bounds = bboxOfPoints(points);
+
+  if (!bounds || !bboxesIntersect(bounds, CITY_BBOX)) {
+    return false;
+  }
+
+  if (points.some(pointInsideBbox)) {
+    return true;
+  }
+
+  if (geometry.type === 'Polygon') {
+    return polygonIntersectsBbox(geometry.coordinates);
+  }
+
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates.some(polygonIntersectsBbox);
+  }
+
+  if (
+    geometry.type === 'LineString' ||
+    geometry.type === 'MultiLineString'
+  ) {
+    const lines = geometry.type === 'LineString'
+      ? [geometry.coordinates]
+      : geometry.coordinates;
+
+    return lines.some((line) => {
+      if (!Array.isArray(line)) return false;
+
+      for (let i = 0; i < line.length - 1; i++) {
+        if (
+          isValidPoint(line[i]) &&
+          isValidPoint(line[i + 1]) &&
+          segmentIntersectsBbox(line[i], line[i + 1])
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+  }
+
+  // Для Point и MultiPoint достаточно проверки координат.
+  return false;
+}
+
+function geoJsonIntersectsCity(geojson) {
+  if (!geojson || typeof geojson !== 'object') {
+    return false;
+  }
+
+  if (geojson.type === 'FeatureCollection') {
+    return Array.isArray(geojson.features) &&
+      geojson.features.some((feature) =>
+        geometryIntersectsBbox(feature?.geometry)
+      );
+  }
+
+  if (geojson.type === 'Feature') {
+    return geometryIntersectsBbox(geojson.geometry);
+  }
+
+  return geometryIntersectsBbox(geojson);
+}
+
+function getGeometryCenter(geojson) {
+  const geometries = [];
+
+  if (geojson?.type === 'FeatureCollection') {
+    for (const feature of geojson.features || []) {
+      if (feature?.geometry) geometries.push(feature.geometry);
+    }
+  } else if (geojson?.type === 'Feature') {
+    if (geojson.geometry) geometries.push(geojson.geometry);
+  } else if (geojson?.type) {
+    geometries.push(geojson);
+  }
+
+  const points = geometries.flatMap((geometry) =>
+    collectPoints(geometry.coordinates)
+  );
+
+  const bounds = bboxOfPoints(points);
+
+  if (!bounds) return null;
+
+  return {
+    longitude: (bounds.west + bounds.east) / 2,
+    latitude: (bounds.south + bounds.north) / 2
+  };
+}
+
+// --------------------------------------------------
+// Категории
+// --------------------------------------------------
+
+function classify(text, provider, capCategory) {
+  const value = `${text || ''} ${provider || ''} ${capCategory || ''}`
+    .toLowerCase();
+
+  if (
+    /dwd|wetter|gewitter|sturm|orkan|regen|schnee|glätte|frost|hitze|unwetter/.test(value)
+  ) {
     return 'weather';
   }
 
-  if (/rauch|brand|explosion|gefahrstoff|chemikal/.test(text)) {
+  if (
+    /trinkwasser|wasser|gesundheit|seuche|bakteri|virus|infektion|rauchgas/.test(value)
+  ) {
+    return 'health';
+  }
+
+  if (
+    /brand|feuer|rauch|explosion|gasgeruch|gasleck/.test(value)
+  ) {
     return 'fire';
   }
 
-  if (/dwd/.test(String(provider).toLowerCase())) {
-    return 'weather';
+  if (
+    /polizei|fahndung|bombenfund|kampfmittel|evakuierung|sperrung|gefahrstoff/.test(value)
+  ) {
+    return 'traffic';
   }
 
-  return 'warning_other';
+  return 'other';
 }
 
-// -------------------- description --------------------
+// --------------------------------------------------
+// CAP: подробности предупреждения
+// --------------------------------------------------
 
-function buildDescription(info, item, detail, provider) {
-  const data = getDashboardData(item);
+function buildDescription(info, raw) {
   const sections = [];
 
-  const description = clean(first(
-    info?.description,
-    data?.description
-  ));
-
-  const instruction = clean(first(
-    info?.instruction,
-    data?.instruction
-  ));
-
-  const event = clean(first(
-    info?.event,
-    data?.event
-  ));
-
-  const areas = getAreas(info);
-  const parameters = getParameters(info);
-  const categories = getCategories(info);
-
-  const urgency = clean(info?.urgency);
-  const certainty = clean(info?.certainty);
-  const responseType = arr(info?.responseType)
-    .map(clean)
-    .filter(Boolean);
-
-  const contact = clean(first(info?.contact, detail?.contact));
-  const web = clean(first(info?.web, detail?.web));
+  const description = cleanText(info?.description);
+  const instruction = cleanText(info?.instruction);
 
   if (description) {
     sections.push(description);
   }
 
-  if (instruction) {
-    sections.push(`Рекомендации населению:\n${instruction}`);
+  if (
+    instruction &&
+    instruction !== description
+  ) {
+    sections.push(`Рекомендации:\n${instruction}`);
   }
 
-  if (event) {
-    sections.push(`Тип опасности: ${event}`);
+  const area = Array.isArray(info?.area)
+    ? info.area
+        .map((item) => cleanText(item?.areaDesc))
+        .filter(Boolean)
+    : [];
+
+  if (area.length) {
+    sections.push(`Затронутая территория:\n${[...new Set(area)].join('; ')}`);
   }
 
-  if (categories.length) {
-    sections.push(`Категории: ${categories.join(', ')}`);
-  }
-
-  if (areas.length) {
-    sections.push(`Зона предупреждения: ${areas.join('; ')}`);
-  }
-
-  if (urgency) {
-    sections.push(`Срочность: ${urgency}`);
-  }
-
-  if (certainty) {
-    sections.push(`Достоверность: ${certainty}`);
-  }
-
-  if (responseType.length) {
-    sections.push(`Меры реагирования: ${responseType.join(', ')}`);
-  }
-
-  if (parameters.length) {
-    sections.push(
-      'Дополнительные параметры:\n' +
-      parameters.map((p) =>
-        `${p.name || 'Параметр'}: ${p.value || '—'}`
-      ).join('\n')
-    );
-  }
+  const contact = cleanText(info?.contact);
 
   if (contact) {
-    sections.push(`Контакт: ${contact}`);
+    sections.push(`Контакт:\n${contact}`);
   }
 
-  if (web) {
-    sections.push(`Дополнительная информация: ${web}`);
+  const website = firstText(info?.web);
+
+  if (website) {
+    sections.push(`Дополнительная информация: ${website}`);
   }
 
-  if (!sections.length) {
-    sections.push(`Официальное предупреждение ${provider} для Wuppertal.`);
-  }
+  const result = sections.join('\n\n');
 
-  return truncateText(sections.join('\n\n'));
+  if (result) return truncate(result);
+
+  return truncate(
+    firstText(
+      raw?.i18nTitle?.de,
+      info?.headline,
+      info?.event,
+      'Официальное предупреждение'
+    )
+  );
 }
 
-// -------------------- normalization --------------------
+function buildItem(raw, detail, geojson) {
+  if (!raw?.id || !detail || !geojson) return null;
 
-function toItem(item, detail = null, source = null) {
-  if (!item || typeof item !== 'object' || !warningId(item)) {
+  const msgType = String(detail.msgType || raw.type || '')
+    .toLowerCase();
+
+  // Отменённые предупреждения не должны снова становиться активными.
+  // Исчезновение из ленты будет обработано syncSource.
+  if (msgType === 'cancel') return null;
+
+  if (
+    detail.status &&
+    String(detail.status).toLowerCase() !== 'actual'
+  ) {
     return null;
   }
 
-  const info = getInfo(detail);
-  const msgType = getMsgType(item, detail);
+  const info = getGermanInfo(detail);
 
-  // Cancel не создаёт отдельное предупреждение.
-  // Исходное предупреждение исчезнет из актуального feed.
-  if (msgType === 'CANCEL') return null;
+  const title = firstText(
+    info.headline,
+    raw.i18nTitle?.de,
+    info.event,
+    'Amtliche Warnung'
+  );
 
-  const title = getTitle(item, detail, info);
-  if (!title) return null;
+  const provider = firstText(
+    getParameter(info, 'sender_langname'),
+    getParameter(info, 'sender_signature'),
+    detail.sender,
+    raw.provider
+  );
 
-  const data = getDashboardData(item);
-  const { provider, sender } = getProvider(item, detail, source);
+  const areaNames = Array.isArray(info.area)
+    ? info.area
+        .map((area) => cleanText(area?.areaDesc))
+        .filter(Boolean)
+    : [];
 
-  const event = clean(first(info?.event, data?.event));
-  const categories = getCategories(info);
-  const description = buildDescription(info, item, detail, provider);
+  const locationName = areaNames.length
+    ? [...new Set(areaNames)].join('; ')
+    : CITY.name;
 
-  // Время события и время публикации — разные значения.
-  const onset = first(info?.onset, data?.onset);
-  const effective = first(info?.effective, data?.effective);
-  const startDate = first(item?.startDate, data?.startDate);
+  const center = getGeometryCenter(geojson);
 
-  const eventTime = iso(first(onset, effective, startDate));
-  const sent = iso(first(detail?.sent, item?.sent, data?.sent));
+  const startDate = firstText(
+    info.onset,
+    info.effective,
+    raw.startDate
+  );
 
-  const expires = iso(first(
-    info?.expires,
-    item?.expiresDate,
-    data?.expiresDate,
-    item?.expires,
-    data?.expires
-  ));
+  const publishedAt = firstText(
+    detail.sent,
+    raw.sent,
+    raw.startDate
+  );
 
-  const severity = first(info?.severity, data?.severity, item?.severity);
+  const expiresAt = firstText(
+    info.expires,
+    raw.expiresDate
+  );
+
+  const description = buildDescription(info, raw);
+
+  const category = classify(
+    `${title} ${description}`,
+    provider,
+    Array.isArray(info.category)
+      ? info.category.join(' ')
+      : info.category
+  );
+
+  const sourceUrl = firstText(
+    info.web,
+    'https://warnung.bund.de/'
+  );
 
   return {
-    source_event_id: String(warningId(item)),
-
-    publisher: sender
-      ? `NINA / ${provider} / ${sender}`
-      : `NINA / ${provider}`,
-
-    title,
+    source_event_id: raw.id,
+    publisher: provider || 'NINA / BBK',
+    title: truncate(title, 500),
     description,
+    category,
+    source_url: sourceUrl,
 
-    category: classify(title, event, categories, provider),
+    latitude: center?.latitude ?? null,
+    longitude: center?.longitude ?? null,
+    geo_precision: center ? 'area' : 'city',
+    location_name: locationName,
 
-    source_url: officialUrl(warningId(item)),
-
-    latitude: null,
-    longitude: null,
-    geo_precision: 'unknown',
-    location_name: null,
-
-    event_time: eventTime,
-    time_precision: eventTime ? 'exact' : 'unknown',
-
-    published_at: sent,
+    event_time: parseDate(startDate),
+    time_precision: startDate ? 'minute' : 'unknown',
+    published_at: parseDate(publishedAt),
 
     status: 'ACTIVE',
-    status_reason: 'listed_in_current_source_feed',
-
-    confidence: 0.85,
+    status_reason: 'listed_in_nina_mapdata_and_geojson',
+    confidence: 0.95,
     is_verified: 1,
 
-    severity: severity ? String(severity) : null,
-    expires_at: expires
+    severity: firstText(
+      info.severity,
+      raw.severity
+    ),
+
+    expires_at: parseDate(expiresAt)
   };
 }
 
-// -------------------- concurrency --------------------
+// --------------------------------------------------
+// Ограничение параллельных запросов
+// --------------------------------------------------
 
-async function mapConcurrent(items, concurrency, fn) {
-  const result = new Array(items.length);
-  let cursor = 0;
+async function mapLimit(items, limit, callback) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
 
   async function worker() {
     while (true) {
-      const index = cursor++;
+      const index = nextIndex++;
 
       if (index >= items.length) return;
 
-      result[index] = await fn(items[index], index);
-    }
-  }
-
-  await Promise.all(
-    Array.from(
-      { length: Math.min(concurrency, items.length) },
-      () => worker()
-    )
-  );
-
-  return result;
-}
-
-// -------------------- requests --------------------
-
-async function fetchArray(url, name) {
-  const { json } = await fetchJson(url);
-
-  if (!Array.isArray(json)) {
-    throw new Error(`${name}: ожидался JSON-массив`);
-  }
-
-  return json;
-}
-
-async function fetchDetail(id) {
-  try {
-    const { json } = await fetchJson(detailUrl(id));
-    return json || null;
-  } catch (error) {
-    console.warn(
-      `[nina] detail ${id}: ${error?.message || String(error)}`
-    );
-
-    return null;
-  }
-}
-
-async function fetchGeo(id) {
-  try {
-    const { json } = await fetchJson(geoJsonUrl(id));
-
-    if (!json || typeof json !== 'object') {
-      return null;
-    }
-
-    return json;
-  } catch (error) {
-    console.warn(
-      `[nina] geo ${id}: ${error?.message || String(error)}`
-    );
-
-    return null;
-  }
-}
-
-// -------------------- GeoJSON --------------------
-
-function coordinatePoints(value, result = []) {
-  if (!Array.isArray(value)) return result;
-
-  if (
-    value.length >= 2 &&
-    typeof value[0] === 'number' &&
-    typeof value[1] === 'number'
-  ) {
-    result.push(value);
-    return result;
-  }
-
-  for (const child of value) {
-    coordinatePoints(child, result);
-  }
-
-  return result;
-}
-
-function getGeoCoordinates(geo) {
-  if (!geo) return [];
-
-  const geometries = [];
-
-  if (geo.type === 'FeatureCollection') {
-    for (const feature of arr(geo.features)) {
-      if (feature?.geometry) geometries.push(feature.geometry);
-    }
-  } else if (geo.type === 'Feature') {
-    if (geo.geometry) geometries.push(geo.geometry);
-  } else if (geo.coordinates || geo.geometries) {
-    geometries.push(geo);
-  }
-
-  const points = [];
-
-  for (const geometry of geometries) {
-    if (geometry.type === 'GeometryCollection') {
-      for (const child of arr(geometry.geometries)) {
-        coordinatePoints(child?.coordinates, points);
+      try {
+        results[index] = await callback(items[index], index);
+      } catch (error) {
+        results[index] = {
+          error: error?.message || String(error)
+        };
       }
-    } else {
-      coordinatePoints(geometry.coordinates, points);
     }
   }
 
-  return points;
-}
-
-function intersectsCity(geo) {
-  const points = getGeoCoordinates(geo);
-
-  if (!points.length) return false;
-
-  const west = Math.min(...points.map(p => p[0]));
-  const east = Math.max(...points.map(p => p[0]));
-  const south = Math.min(...points.map(p => p[1]));
-  const north = Math.max(...points.map(p => p[1]));
-
-  return (
-    east >= CITY_BBOX.west &&
-    west <= CITY_BBOX.east &&
-    north >= CITY_BBOX.south &&
-    south <= CITY_BBOX.north
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
   );
+
+  await Promise.all(workers);
+
+  return results;
 }
 
-function mentionsCity(item, detail) {
-  const info = getInfo(detail);
+// --------------------------------------------------
+// Загрузка предупреждения
+// --------------------------------------------------
 
-  const text = [
-    getTitle(item, detail, info),
-    info?.description,
-    info?.instruction,
-    getAreas(info).join(' ')
-  ].join(' ');
+async function loadWarning(raw) {
+  const id = encodeURIComponent(raw.id);
 
-  return /\bwuppertal\b/i.test(text);
-}
+  const detailUrl = `${BASE_URL}/warnings/${id}.json`;
+  const geoUrl = `${BASE_URL}/warnings/${id}.geojson`;
 
-async function belongsToCity(item, detail, geo) {
-  // Явное упоминание города.
-  if (mentionsCity(item, detail)) {
-    return {
-      accepted: true,
-      precision: 'city',
-      confidence: 0.9
-    };
+  const [detailResult, geoResult] = await Promise.all([
+    fetchJson(detailUrl),
+    fetchJson(geoUrl)
+  ]);
+
+  const detail = detailResult?.json;
+  const geojson = geoResult?.json;
+
+  if (!detail || typeof detail !== 'object') {
+    throw new Error(`Некорректный CAP detail: ${raw.id}`);
   }
 
-  // GeoJSON — географическая проверка.
-  if (geo) {
-    const accepted = intersectsCity(geo);
-
-    return {
-      accepted,
-      precision: accepted ? 'area' : 'unknown',
-      confidence: accepted ? 0.9 : 0
-    };
+  if (!geojson || typeof geojson !== 'object') {
+    throw new Error(`Некорректный GeoJSON: ${raw.id}`);
   }
 
-  // Без GeoJSON нельзя уверенно определить территорию.
   return {
-    accepted: false,
-    precision: 'unknown',
-    confidence: 0
+    raw,
+    detail,
+    geojson
   };
 }
 
-// -------------------- feed loading --------------------
+// --------------------------------------------------
+// Основной запуск
+// --------------------------------------------------
 
-async function loadDashboard(env) {
-  const url = dashboardUrl(env);
-  const items = await fetchArray(url, 'NINA dashboard');
+export async function run(ctx) {
+  const env = ctx.env;
 
-  return items.map(item => ({
-    item,
-    source: { id: 'dashboard', name: 'BBK' },
-    localDashboard: true
-  }));
-}
+  const feedResults = await Promise.all(
+    FEEDS.map(async (feed) => {
+      const url = `${BASE_URL}/${feed}/mapData.json`;
 
-async function loadMapFeeds() {
-  const results = await Promise.allSettled(
-    MAP_SOURCES.map(async source => {
-      const items = await fetchArray(
-        mapDataUrl(source.id),
-        source.id
-      );
+      try {
+        const result = await fetchJson(url);
+        const array = extractArray(result?.json);
 
-      return items.map(item => ({
-        item,
-        source,
-        localDashboard: false
-      }));
+        if (!array) {
+          throw new Error(`Неожиданный формат ${feed}/mapData.json`);
+        }
+
+        return {
+          feed,
+          items: array
+            .map(normalizeFeedItem)
+            .filter(Boolean),
+          ok: true
+        };
+      } catch (error) {
+        console.warn(
+          `[nina] Ошибка загрузки ленты ${feed}:`,
+          error?.message || error
+        );
+
+        return {
+          feed,
+          items: [],
+          ok: false
+        };
+      }
     })
   );
 
-  const records = [];
-  const errors = [];
-  let successful = 0;
+  let complete = feedResults.every((result) => result.ok);
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
+  // Дедупликация предупреждений по идентификатору.
+  const warningsById = new Map();
 
-    if (result.status === 'fulfilled') {
-      successful++;
-      records.push(...result.value);
-    } else {
-      errors.push({
-        source: MAP_SOURCES[i].id,
-        error: result.reason?.message || String(result.reason)
-      });
+  for (const feed of feedResults) {
+    for (const item of feed.items) {
+      const existing = warningsById.get(item.id);
 
-      console.warn(
-        `[nina] feed ${MAP_SOURCES[i].id} failed:`,
-        result.reason?.message || result.reason
-      );
+      if (!existing) {
+        warningsById.set(item.id, item);
+        continue;
+      }
+
+      // Если один ID присутствует в нескольких лентах,
+      // оставляем запись с более высокой версией.
+      if (
+        Number(item.version || 0) >
+        Number(existing.version || 0)
+      ) {
+        warningsById.set(item.id, item);
+      }
     }
   }
 
-  return {
-    records,
-    successful,
-    errors
-  };
-}
+  const warnings = [...warningsById.values()];
 
-// -------------------- main --------------------
-
-export async function run(ctx) {
-  // Dashboard Wuppertal.
-  // Ошибка здесь должна прервать запуск, а не завершить все события.
-  const dashboardRecords = await loadDashboard(ctx.env);
-
-  // Остальные системы предупреждений.
-  const mapFeeds = await loadMapFeeds();
-
-  const combined = [
-    ...dashboardRecords,
-    ...mapFeeds.records
-  ];
-
-  // Deduplicate по CAP ID.
-  // Приоритет — локальный dashboard.
-  const unique = new Map();
-
-  for (const record of combined) {
-    const id = warningId(record.item);
-
-    if (!id) continue;
-
-    const existing = unique.get(id);
-
-    if (!existing || record.localDashboard) {
-      unique.set(id, record);
-    }
-  }
-
-  const records = [...unique.values()];
-
-  // Подробности CAP.
-  const details = await mapConcurrent(
-    records,
-    DETAIL_CONCURRENCY,
-    async record => fetchDetail(warningId(record.item))
+  console.log(
+    `[nina] Ленты: ${feedResults.map(
+      (result) => `${result.feed}=${result.items.length}`
+    ).join(', ')}; уникальных предупреждений: ${warnings.length}`
   );
 
-  // GeoJSON нужен только для предупреждений из mapData.
-  const geoRecords = records
-    .map((record, index) => ({ record, index }))
-    .filter(({ record }) => !record.localDashboard);
-
-  const geoResults = await mapConcurrent(
-    geoRecords,
-    GEO_CONCURRENCY,
-    async ({ record }) => fetchGeo(warningId(record.item))
+  const loaded = await mapLimit(
+    warnings,
+    CONCURRENCY,
+    loadWarning
   );
-
-  const geoByIndex = new Map();
-
-  let geoFailures = 0;
-
-  geoRecords.forEach((entry, i) => {
-    const geo = geoResults[i];
-
-    geoByIndex.set(entry.index, geo);
-
-    if (!geo) {
-      geoFailures++;
-    }
-  });
 
   const items = [];
 
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i];
-    const detail = details[i];
+  let loadedCount = 0;
+  let failedCount = 0;
+  let outsideCityCount = 0;
+  let cancelledCount = 0;
 
-    const event = toItem(
-      record.item,
-      detail,
-      record.source
-    );
+  for (const result of loaded) {
+    if (!result || result.error) {
+      failedCount++;
+      complete = false;
 
-    if (!event) continue;
+      console.warn(
+        '[nina] Не удалось обработать предупреждение:',
+        result?.error || 'Неизвестная ошибка'
+      );
 
-    // Dashboard уже содержит предупреждения своего ARS.
-    if (record.localDashboard) {
-      event.geo_precision = 'city';
-      event.location_name = CITY.name;
-      event.confidence = 0.95;
-
-      items.push(event);
       continue;
     }
 
-    const geo = geoByIndex.get(i);
+    loadedCount++;
 
-    const location = await belongsToCity(
-      record.item,
-      detail,
-      geo
-    );
+    const { raw, detail, geojson } = result;
 
-    if (!location.accepted) continue;
+    const msgType = String(detail?.msgType || raw.type || '')
+      .toLowerCase();
 
-    event.geo_precision = location.precision;
-    event.location_name = CITY.name;
-    event.confidence = location.confidence;
+    if (msgType === 'cancel') {
+      cancelledCount++;
+      continue;
+    }
 
-    items.push(event);
+    // Без корректной геометрии событие не попадёт в базу.
+    // Геометрия уже загружена, проверяем её пересечение с городом.
+    if (!geoJsonIntersectsCity(geojson)) {
+      outsideCityCount++;
+      continue;
+    }
+
+    const item = buildItem(raw, detail, geojson);
+
+    if (item) {
+      items.push(item);
+    }
   }
 
-  // Синхронизация безопасна только при полной загрузке feeds
-  // и отсутствии ошибок GeoJSON.
-  const complete =
-    mapFeeds.successful === MAP_SOURCES.length &&
-    geoFailures === 0;
+  // Важно: если хотя бы один запрос завершился ошибкой,
+  // нельзя разрешать syncSource закрывать отсутствующие события.
+  const syncOptions = {
+    resolveMissing: complete,
+    resolvedScopes: null,
+    scope: null
+  };
 
   console.log(
-    `[nina] dashboard=${dashboardRecords.length}, ` +
-    `map=${mapFeeds.records.length}, ` +
-    `unique=${records.length}, ` +
-    `accepted=${items.length}, ` +
-    `feeds=${mapFeeds.successful}/${MAP_SOURCES.length}, ` +
-    `geo_errors=${geoFailures}, ` +
+    `[nina] Загружено: ${loadedCount}; ` +
+    `ошибок: ${failedCount}; ` +
+    `за пределами Вупперталя: ${outsideCityCount}; ` +
+    `отменено: ${cancelledCount}; ` +
+    `для Вупперталя: ${items.length}; ` +
     `resolveMissing=${complete}`
   );
 
-  return syncSource(ctx, meta.id, items, {
-    resolveMissing: complete,
-    resolvedScopes: complete ? null : [],
-    scope: null
-  });
+  return syncSource(
+    ctx,
+    meta.id,
+    items,
+    syncOptions
+  );
 }
 
-// -------------------- probe --------------------
+// --------------------------------------------------
+// Диагностика
+// --------------------------------------------------
 
 export async function probe(ctx) {
-  const url = dashboardUrl(ctx.env);
+  const results = {};
 
-  const { json, text } = await fetchJson(url);
-
-  if (!Array.isArray(json)) {
-    throw new Error('NINA dashboard: ожидался JSON-массив');
-  }
-
-  const dashboard = json;
-  const firstItem = dashboard.find(item => warningId(item));
-
-  const detail = firstItem
-    ? await fetchDetail(warningId(firstItem))
-    : null;
-
-  const feeds = {};
-
-  for (const source of MAP_SOURCES) {
-    const feedUrl = mapDataUrl(source.id);
+  for (const feed of FEEDS) {
+    const url = `${BASE_URL}/${feed}/mapData.json`;
 
     try {
-      const items = await fetchArray(feedUrl, source.id);
+      const result = await fetchJson(url);
+      const array = extractArray(result?.json);
 
-      feeds[source.id] = {
-        url: feedUrl,
-        count: items.length,
-        sample: items.slice(0, 2)
+      results[feed] = {
+        url,
+        ok: Boolean(array),
+        count: array?.length ?? null,
+        sample: array?.slice(0, 2) ?? null
       };
     } catch (error) {
-      feeds[source.id] = {
-        url: feedUrl,
+      results[feed] = {
+        url,
+        ok: false,
         error: error?.message || String(error)
       };
     }
   }
 
-  const firstMapWarning = Object.values(feeds)
-    .find(feed => feed.count > 0)?.sample?.[0];
-
-  let mapDetail = null;
-  let geo = null;
-
-  if (firstMapWarning?.id) {
-    mapDetail = await fetchDetail(firstMapWarning.id);
-    geo = await fetchGeo(firstMapWarning.id);
-  }
-
   return {
-    url,
-    count: dashboard.length,
-    dashboard_sample: dashboard.slice(0, 2),
-
-    detail_url: firstItem
-      ? detailUrl(warningId(firstItem))
-      : null,
-
-    detail_sample: detail,
-
-    geojson_url: firstItem
-      ? geoJsonUrl(warningId(firstItem))
-      : null,
-
-    feeds,
-
-    map_warning_id: firstMapWarning?.id || null,
-
-    map_detail_url: firstMapWarning?.id
-      ? detailUrl(firstMapWarning.id)
-      : null,
-
-    map_detail_sample: mapDetail,
-
-    map_geojson_url: firstMapWarning?.id
-      ? geoJsonUrl(firstMapWarning.id)
-      : null,
-
-    map_geojson_sample: geo,
-
-    city_bbox: CITY_BBOX,
-
-    raw: text.slice(0, 3000)
+    city: CITY.name,
+    bbox: CITY_BBOX,
+    feeds: results
   };
 }
