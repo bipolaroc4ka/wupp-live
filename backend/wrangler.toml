@@ -1,7 +1,7 @@
 # Wuppertal Live — конфигурация Cloudflare Worker.
 # НИЧЕГО не разворачивается автоматически: деплой вы запускаете сами (см. docs/CLOUDFLARE.md).
 
-name = "wupp-live"
+name = "wuppertal-live-api"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
@@ -14,6 +14,11 @@ enabled = true
 binding = "DB"
 database_name = "wuppertal-live"
 database_id = "97ba1363-f8de-44b7-81d7-239074c6a100"
+
+# Необязательно: машинный перевод текстов событий на русский (Workers AI, модель m2m100, есть бесплатная квота).
+# Без этих двух строк перевод просто выключен, приложение показывает немецкий оригинал.
+[ai]
+binding = "AI"
 
 # Три cron-триггера (лимит бесплатного плана — 5 на аккаунт).
 # Выражения ДОЛЖНЫ совпадать с CRON_MAP в src/cron.js.
@@ -28,6 +33,8 @@ crons = [
 # Адрес вашего frontend (origin, без пути и без слэша на конце). Несколько — через запятую.
 # Пример: "https://ваш-логин.github.io"
 ALLOWED_ORIGINS = "https://bipolaroc4ka.github.io"
+
+# Nominatim требует идентифицировать приложение. Укажите свою контактную почту или URL проекта.
 NOMINATIM_CONTACT = "isychev10@gmail.com"
 
 # Presseportal: ID «Newsroom» через запятую.
