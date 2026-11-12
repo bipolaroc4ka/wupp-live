@@ -24,6 +24,20 @@ const NOT_A_NAME = '(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einer|Auf|An|Am|Im
 const PLACE_JOINED = new RegExp(String.raw`(?<![\p{L}\p{N}])\p{Lu}${NAME_CHARS}*${SUFFIX_JOINED}(?![\p{L}\p{N}])`, 'gu');
 // «Wuppertaler Straße», «Alter Markt»: одно прилагательное и отдельное слово-окончание
 const PLACE_SEPARATE = new RegExp(String.raw`(?<![\p{L}\p{N}])(?!${NOT_A_NAME}[ \t])\p{Lu}${NAME_CHARS}*[ \t]+${SUFFIX_SEPARATE}(?![\p{L}\p{N}])`, 'gu');
+// Другие названия, не похожие на улицы: съезды и участки трасс, районы, города.
+const TOKEN = String.raw`\p{Lu}[\p{L}\p{M}'’]*`;
+const HYPHENATED = String.raw`${TOKEN}(?:-${TOKEN})*`;
+// «Wuppertal-Barmen», «Wuppertal-Oberbarmen»: слова с заглавной буквы, соединённые дефисом, это почти всегда названия
+const PLACE_HYPHEN = new RegExp(String.raw`(?<![\p{L}\p{N}-])${TOKEN}(?:-${TOKEN})+(?![\p{L}\p{N}])`, 'gu');
+// «Richtung Köln», «zwischen Holtkamp und Wuppertal-Barmen», «AS Barmen», «Dreieck Nord»
+const LEAD_WORDS = '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD)';
+const PLACE_AFTER_LEAD = new RegExp(String.raw`(?<=${LEAD_WORDS}[ \t]+)${HYPHENATED}(?![\p{L}\p{N}])`, 'gu');
+const PLACE_AFTER_BETWEEN = new RegExp(String.raw`(?<=zwischen[ \t]+${HYPHENATED}[ \t]+und[ \t]+)${HYPHENATED}(?![\p{L}\p{N}])`, 'gu');
+// районы Вупперталя и ближайшие города: «Barmen» модель иначе читает как «бармен»
+const PLACE_KNOWN = new RegExp(String.raw`(?<![\p{L}\p{N}])(?:Wuppertal|Elberfeld|Barmen|Oberbarmen|Unterbarmen|Heckinghausen|Langerfeld|Beyenburg|Ronsdorf|Cronenberg|Vohwinkel|Uellendahl|Katernberg|Sonnborn|Wichlinghausen|Solingen|Remscheid|Hagen|Velbert|Haan|Hilden|Mettmann|Schwelm|Gevelsberg|Sprockhövel|Düsseldorf|Köln|Dortmund|Essen|Bochum|Leverkusen|Hattingen)(?![\p{L}\p{N}])`, 'gu');
+// после «Richtung» / «zwischen» бывают и обычные существительные, а не названия
+const NOT_NAME_WORD = new RegExp(`^(?:${NOT_A_NAME}|Fahrbahn|Fahrtrichtung|Gegenrichtung|Fahrstreifen|Standstreifen|Baustelle|Unfall|Stau|Umleitung|Verkehr|Einsatzstelle|Gefahrenstelle)$`, 'u');
+
 // обычные слова, которые оканчиваются так же, но улицами не являются
 const COMMON_NOUNS = /^(?:Rettungsgasse|Rettungsweg|Fluchtweg|Gehweg|Radweg|Radschnellweg|Fußweg|Fussweg|Feldweg|Waldweg|Wirtschaftsweg|Zufahrtsweg|Umweg|Hinweg|Rückweg|Rueckweg|Ausweg|Parkplatz|Rastplatz|Sportplatz|Spielplatz|Festplatz|Stellplatz|Arbeitsplatz|Weihnachtsmarkt|Wochenmarkt|Flohmarkt|Bahndamm|Schutzwall|Lärmschutzwall|Rettungsring|Schutzring)$/iu;
 
@@ -113,6 +127,10 @@ export function findProtectedSpans(text, locationName = '') {
 
   collect(PLACE_JOINED, (m) => !COMMON_NOUNS.test(m));
   collect(PLACE_SEPARATE);
+  collect(PLACE_HYPHEN);
+  collect(PLACE_AFTER_LEAD, (m) => !NOT_NAME_WORD.test(m));
+  collect(PLACE_AFTER_BETWEEN, (m) => !NOT_NAME_WORD.test(m));
+  collect(PLACE_KNOWN);
 
   if (!spans.length) return [];
 
@@ -304,7 +322,8 @@ async function findPendingEvents(env, limit = SCAN_LIMIT) {
        e.id,
        e.title,
        e.description,
-       e.location_name
+       e.location_name,
+       e.source
      FROM events e
      LEFT JOIN translations tt
        ON tt.event_id = e.id
@@ -460,11 +479,10 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
     try {
       const hash = textHash(event.title, event.description);
 
-      const translatedTitle = await translateText(
-        env,
-        truncate(event.title || '', 300),
-        event.location_name
-      );
+      // Заголовок Autobahn («A46 | Wuppertal-Barmen - Holtkamp») состоит из номера трассы и названий мест: не переводим.
+      const translatedTitle = event.source === 'autobahn'
+        ? String(event.title || '').trim()
+        : await translateText(env, truncate(event.title || '', 300), event.location_name);
 
       let translatedDescription = null;
 
