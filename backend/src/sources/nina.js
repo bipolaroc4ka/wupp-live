@@ -526,7 +526,20 @@ function getGeometryCenter(geojson) {
   };
 }
 
-// --------------------------------------------------
+function getGeoJsonDiagnostics(geojson) {
+  const geometries = getGeoJsonGeometries(geojson);
+
+  const points = geometries.flatMap((geometry) =>
+    collectPoints(geometry.coordinates)
+  );
+
+  return {
+    type: geojson?.type || null,
+    geometryTypes: geometries.map((geometry) => geometry.type),
+    points: points.length,
+    bounds: bboxOfPoints(points)
+  };
+}// --------------------------------------------------
 // Определение географической релевантности
 // --------------------------------------------------
 
@@ -1034,9 +1047,32 @@ export async function run(ctx) {
     );
 
     if (!scope) {
-      outsideNRWCount++;
-      continue;
-    }
+  outsideNRWCount++;
+
+  const geo = getGeoJsonDiagnostics(geojson);
+
+  console.log(
+    '[nina] Географический фильтр:',
+    JSON.stringify({
+      id: raw.id,
+      title,
+      areas: areaNames,
+      geometry: geo,
+      intersectsCity: geoJsonIntersectsBbox(
+        geojson,
+        CITY_BBOX
+      ),
+      intersectsNRW: geoJsonIntersectsBbox(
+        geojson,
+        NRW_BBOX
+      ),
+      cityBbox: CITY_BBOX,
+      nrwBbox: NRW_BBOX
+    })
+  );
+
+  continue;
+}
 
     const item = buildItem(raw, detail, geojson);
 
