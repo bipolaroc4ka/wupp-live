@@ -1,3 +1,4 @@
+
 // Wuppertal Live — машинный перевод событий DE → RU.
 // Оригиналы всегда остаются в events.
 // Названия улиц и мест не отправляются в Workers AI.
@@ -11,38 +12,89 @@ const MAX_DESC = 1600;
 const PER_RUN = 6;
 const SCAN_LIMIT = 500;
 
-// Названия улиц и мест не переводим: их не отправляем в модель, а вставляем как есть.
-// Регулярки БЕЗ флага i: с ним \p{Lu} совпадает и со строчными буквами, и защита «съедала» бы обычные слова
-// («Unfall auf der Hauptstraße», «Bitte Rettungsgasse»). Заглавная буква здесь действительно обязательна.
-const SUFFIX_JOINED = '(?:[Ss]traße|[Ss]trasse|[Ss]tr\\.|[Ww]eg|[Pp]latz|[Aa]llee|[Rr]ing|[Gg]asse|[Uu]fer|[Dd]amm|[Cc]haussee|[Ss]tieg|[Bb]rücke|[Bb]ruecke|[Pp]romenade|[Ww]all|[Hh]öfe|[Hh]oefe|[Mm]arkt)';
-const SUFFIX_SEPARATE = '(?:Straße|Strasse|Str\\.|Weg|Platz|Allee|Ring|Gasse|Ufer|Damm|Markt|Brücke|Promenade)';
-const NAME_CHARS = String.raw`[\p{L}\p{M}0-9'’-]`;
-// слова, с которых название не начинается («Der Weg», «Sperrung Hauptstraße» и т.п.)
-const NOT_A_NAME = '(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einer|Auf|An|Am|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung)';
+// ------------------------------------------------------------
+// ЗАЩИТА НАЗВАНИЙ УЛИЦ И МЕСТ
+// ------------------------------------------------------------
+
+// Латинские буквы используются для распознавания немецких названий.
+// Кириллица после названия не мешает его обнаружению.
+const NAME_CHARS = String.raw`[\p{Script=Latin}\p{M}0-9'’-]`;
+
+const LEFT_BOUNDARY = String.raw`(?<![\p{Script=Latin}\p{N}])`;
+const RIGHT_BOUNDARY = String.raw`(?![\p{Script=Latin}\p{N}])`;
+
+const SUFFIX_JOINED =
+  '(?:[Ss]traße|[Ss]trasse|[Ss]tr\\.|[Ww]eg|[Pp]latz|[Aa]llee|[Rr]ing|[Gg]asse|[Uu]fer|[Dd]amm|[Cc]haussee|[Ss]tieg|[Bb]rücke|[Bb]ruecke|[Pp]romenade|[Ww]all|[Hh]öfe|[Hh]oefe|[Mm]arkt)';
+
+const SUFFIX_SEPARATE =
+  '(?:Straße|Strasse|Str\\.|Weg|Platz|Allee|Ring|Gasse|Ufer|Damm|Markt|Brücke|Promenade)';
+
+// Слова, с которых название обычно не начинается.
+const NOT_A_NAME =
+  '(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einer|Auf|An|Am|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung)';
 
 // «Hauptstraße», «Friedrich-Ebert-Straße», «Bahnhofstr.»
-const PLACE_JOINED = new RegExp(String.raw`(?<![\p{L}\p{N}])\p{Lu}${NAME_CHARS}*${SUFFIX_JOINED}(?![\p{L}\p{N}])`, 'gu');
-// «Wuppertaler Straße», «Alter Markt»: одно прилагательное и отдельное слово-окончание
-const PLACE_SEPARATE = new RegExp(String.raw`(?<![\p{L}\p{N}])(?!${NOT_A_NAME}[ \t])\p{Lu}${NAME_CHARS}*[ \t]+${SUFFIX_SEPARATE}(?![\p{L}\p{N}])`, 'gu');
-// Другие названия, не похожие на улицы: съезды и участки трасс, районы, города.
-const TOKEN = String.raw`\p{Lu}[\p{L}\p{M}'’]*`;
-const HYPHENATED = String.raw`${TOKEN}(?:-${TOKEN})*`;
-// «Wuppertal-Barmen», «Wuppertal-Oberbarmen»: слова с заглавной буквы, соединённые дефисом, это почти всегда названия
-const PLACE_HYPHEN = new RegExp(String.raw`(?<![\p{L}\p{N}-])${TOKEN}(?:-${TOKEN})+(?![\p{L}\p{N}])`, 'gu');
-// «Richtung Köln», «zwischen Holtkamp und Wuppertal-Barmen», «AS Barmen», «Dreieck Nord»
-const LEAD_WORDS = '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD)';
-const PLACE_AFTER_LEAD = new RegExp(String.raw`(?<=${LEAD_WORDS}[ \t]+)${HYPHENATED}(?![\p{L}\p{N}])`, 'gu');
-const PLACE_AFTER_BETWEEN = new RegExp(String.raw`(?<=zwischen[ \t]+${HYPHENATED}[ \t]+und[ \t]+)${HYPHENATED}(?![\p{L}\p{N}])`, 'gu');
-// районы Вупперталя и ближайшие города: «Barmen» модель иначе читает как «бармен»
-const PLACE_KNOWN = new RegExp(String.raw`(?<![\p{L}\p{N}])(?:Wuppertal|Elberfeld|Barmen|Oberbarmen|Unterbarmen|Heckinghausen|Langerfeld|Beyenburg|Ronsdorf|Cronenberg|Vohwinkel|Uellendahl|Katernberg|Sonnborn|Wichlinghausen|Solingen|Remscheid|Hagen|Velbert|Haan|Hilden|Mettmann|Schwelm|Gevelsberg|Sprockhövel|Düsseldorf|Köln|Dortmund|Essen|Bochum|Leverkusen|Hattingen)(?![\p{L}\p{N}])`, 'gu');
-// после «Richtung» / «zwischen» бывают и обычные существительные, а не названия
-const NOT_NAME_WORD = new RegExp(`^(?:${NOT_A_NAME}|Fahrbahn|Fahrtrichtung|Gegenrichtung|Fahrstreifen|Standstreifen|Baustelle|Unfall|Stau|Umleitung|Verkehr|Einsatzstelle|Gefahrenstelle)$`, 'u');
+const PLACE_JOINED = new RegExp(
+  String.raw`${LEFT_BOUNDARY}\p{Lu}${NAME_CHARS}*${SUFFIX_JOINED}${RIGHT_BOUNDARY}`,
+  'gu'
+);
 
-// обычные слова, которые оканчиваются так же, но улицами не являются
-const COMMON_NOUNS = /^(?:Rettungsgasse|Rettungsweg|Fluchtweg|Gehweg|Radweg|Radschnellweg|Fußweg|Fussweg|Feldweg|Waldweg|Wirtschaftsweg|Zufahrtsweg|Umweg|Hinweg|Rückweg|Rueckweg|Ausweg|Parkplatz|Rastplatz|Sportplatz|Spielplatz|Festplatz|Stellplatz|Arbeitsplatz|Weihnachtsmarkt|Wochenmarkt|Flohmarkt|Bahndamm|Schutzwall|Lärmschutzwall|Rettungsring|Schutzring)$/iu;
+// «Wuppertaler Straße», «Alter Markt», «Lichtscheider Str.»
+const PLACE_SEPARATE = new RegExp(
+  String.raw`${LEFT_BOUNDARY}(?!${NOT_A_NAME}[ \t])\p{Lu}${NAME_CHARS}*[ \t]+${SUFFIX_SEPARATE}${RIGHT_BOUNDARY}`,
+  'gu'
+);
+
+// Названия, соединённые дефисами.
+// «Wuppertal-Barmen», «Wuppertal-Ronsdorf»,
+// «Max-Horkheimer-Straße», «W-Wichlinghausen».
+const TOKEN = String.raw`\p{Lu}[\p{Script=Latin}\p{M}'’]*`;
+const HYPHENATED = String.raw`${TOKEN}(?:-${TOKEN})*`;
+
+const PLACE_HYPHEN = new RegExp(
+  String.raw`${LEFT_BOUNDARY}${TOKEN}(?:-${TOKEN})+${RIGHT_BOUNDARY}`,
+  'gu'
+);
+
+// Географические названия после вводных слов:
+// «Richtung Köln», «AS Barmen», «Dreieck Nord».
+const LEAD_WORDS =
+  '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD)';
+
+const PLACE_AFTER_LEAD = new RegExp(
+  String.raw`(?<=${LEAD_WORDS}[ \t]+)${HYPHENATED}${RIGHT_BOUNDARY}`,
+  'gu'
+);
+
+const PLACE_AFTER_BETWEEN = new RegExp(
+  String.raw`(?<=zwischen[ \t]+${HYPHENATED}[ \t]+und[ \t]+)${HYPHENATED}${RIGHT_BOUNDARY}`,
+  'gu'
+);
+
+// Известные города, районы и географические названия.
+// Добавлены Wichlinghausen, Freudenberg и другие районы.
+const PLACE_KNOWN = new RegExp(
+  String.raw`${LEFT_BOUNDARY}(?:Wuppertal|Elberfeld|Barmen|Oberbarmen|Unterbarmen|Heckinghausen|Langerfeld|Beyenburg|Ronsdorf|Cronenberg|Vohwinkel|Uellendahl|Katernberg|Sonnborn|Wichlinghausen|Wichlinghauser|Freudenberg|Solingen|Remscheid|Hagen|Velbert|Haan|Hilden|Mettmann|Schwelm|Gevelsberg|Sprockhövel|Düsseldorf|Köln|Dortmund|Essen|Bochum|Leverkusen|Hattingen|Recklinghausen|Bruchmühle|Scherenberg|Untenrohleder|Elisabetheim|Holtkamp|BEK)(?![\p{Script=Latin}\p{N}])`,
+  'gu'
+);
+
+// Обычные слова, которые не должны защищаться как географические названия.
+const NOT_NAME_WORD = new RegExp(
+  `^(?:${NOT_A_NAME}|Fahrbahn|Fahrtrichtung|Gegenrichtung|Fahrstreifen|Standstreifen|Baustelle|Unfall|Stau|Umleitung|Verkehr|Einsatzstelle|Gefahrenstelle)$`,
+  'u'
+);
+
+// Обычные слова, которые заканчиваются так же, как названия мест.
+const COMMON_NOUNS =
+  /^(?:Rettungsgasse|Rettungsweg|Fluchtweg|Gehweg|Radweg|Radschnellweg|Fußweg|Fussweg|Feldweg|Waldweg|Wirtschaftsweg|Zufahrtsweg|Umweg|Hinweg|Rückweg|Rueckweg|Ausweg|Parkplatz|Rastplatz|Sportplatz|Spielplatz|Festplatz|Stellplatz|Arbeitsplatz|Weihnachtsmarkt|Wochenmarkt|Flohmarkt|Bahndamm|Schutzwall|Lärmschutzwall|Rettungsring|Schutzring)$/iu;
+
+// ------------------------------------------------------------
+// ХЕШ ИСХОДНОГО ТЕКСТА
+// ------------------------------------------------------------
 
 export function textHash(title, description) {
   const s = `${title || ''}\u0000${description || ''}`;
+
   let h = 2166136261;
 
   for (let i = 0; i < s.length; i++) {
@@ -53,12 +105,17 @@ export function textHash(title, description) {
   return (h >>> 0).toString(16) + ':' + s.length;
 }
 
+// ------------------------------------------------------------
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ------------------------------------------------------------
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function makeLocationVariants(locationName) {
   const name = String(locationName || '').trim();
+
   if (!name) return [];
 
   const variants = [name];
@@ -80,6 +137,7 @@ function makeLocationVariants(locationName) {
     if (!pattern.test(name)) continue;
 
     const stem = name.replace(pattern, '');
+
     for (const ending of endings) {
       variants.push(stem + ending);
     }
@@ -90,16 +148,20 @@ function makeLocationVariants(locationName) {
     .sort((a, b) => b.length - a.length);
 }
 
-// Возвращает диапазоны названий, которые нельзя переводить.
-// Вместо специальных маркеров мы вообще не передаём эти фрагменты модели.
+// ------------------------------------------------------------
+// ПОИСК ЗАЩИЩЁННЫХ ФРАГМЕНТОВ
+// ------------------------------------------------------------
+
 export function findProtectedSpans(text, locationName = '') {
   const source = String(text || '');
+
   if (!source) return [];
 
   const spans = [];
 
   function collect(pattern, accept = () => true) {
     pattern.lastIndex = 0;
+
     let match;
 
     while ((match = pattern.exec(source)) !== null) {
@@ -117,19 +179,30 @@ export function findProtectedSpans(text, locationName = '') {
     }
   }
 
+  // Сначала защищаем название, известное из location_name.
   for (const variant of makeLocationVariants(locationName)) {
     const pattern = new RegExp(
-      `(?<![\\p{L}\\p{N}])${escapeRegExp(variant)}(?![\\p{L}\\p{N}])`,
+      `(?<![\\p{Script=Latin}\\p{N}])${escapeRegExp(variant)}(?![\\p{Script=Latin}\\p{N}])`,
       'giu'
     );
+
     collect(pattern);
   }
 
+  // Улицы с присоединёнными окончаниями.
   collect(PLACE_JOINED, (m) => !COMMON_NOUNS.test(m));
+
+  // Улицы с отдельным окончанием.
   collect(PLACE_SEPARATE);
+
+  // Составные географические названия.
   collect(PLACE_HYPHEN);
+
+  // Географические названия после вводных слов.
   collect(PLACE_AFTER_LEAD, (m) => !NOT_NAME_WORD.test(m));
   collect(PLACE_AFTER_BETWEEN, (m) => !NOT_NAME_WORD.test(m));
+
+  // Известные города и районы.
   collect(PLACE_KNOWN);
 
   if (!spans.length) return [];
@@ -137,7 +210,7 @@ export function findProtectedSpans(text, locationName = '') {
   // Сначала более длинные диапазоны при одинаковом начале.
   spans.sort((a, b) => a.start - b.start || b.end - a.end);
 
-  // Объединяем пересекающиеся диапазоны.
+  // Объединяем пересекающиеся и соприкасающиеся диапазоны.
   const merged = [];
 
   for (const span of spans) {
@@ -153,9 +226,13 @@ export function findProtectedSpans(text, locationName = '') {
   return merged;
 }
 
-// Разбивает длинную строку, стараясь не разрывать слова.
+// ------------------------------------------------------------
+// РАЗБИЕНИЕ ДЛИННОГО ТЕКСТА
+// ------------------------------------------------------------
+
 function splitLongLine(line, maxLength = CHUNK) {
   const source = String(line || '');
+
   if (source.length <= maxLength) return [source];
 
   const chunks = [];
@@ -165,22 +242,24 @@ function splitLongLine(line, maxLength = CHUNK) {
     let cut = rest.lastIndexOf(' ', maxLength);
 
     if (cut < Math.floor(maxLength * 0.5)) {
-      cut = maxLength;
+      cut = rest.indexOf(' ', maxLength);
     }
 
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut);
+    // Если подходящего пробела нет, не разрываем слово.
+    if (cut < 0) break;
 
-    // Не теряем пробел на границе частей.
-    if (rest.startsWith(' ')) {
-      chunks[chunks.length - 1] += ' ';
-      rest = rest.slice(1);
-    }
+    chunks.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
   }
 
   if (rest) chunks.push(rest);
+
   return chunks;
 }
+
+// ------------------------------------------------------------
+// WORKERS AI
+// ------------------------------------------------------------
 
 async function callAI(env, text) {
   const result = await env.AI.run(MODEL, {
@@ -202,9 +281,10 @@ async function callAI(env, text) {
 
 async function translatePlainText(env, text) {
   const source = String(text || '');
+
   if (!source.trim()) return source;
 
-  // Переводим строки отдельно, сохраняя исходные переносы.
+  // Переводим строки отдельно, сохраняя переносы.
   const lines = source.split('\n');
   const translatedLines = [];
 
@@ -232,24 +312,39 @@ async function translatePlainText(env, text) {
   return translatedLines.join('\n');
 }
 
-// Фрагмент между названиями: пробелы по краям модель обрезает, поэтому возвращаем их сами,
-// а фрагменты без букв (запятая, пробел, цифры) модели не отправляем.
+// ------------------------------------------------------------
+// ПЕРЕВОД ФРАГМЕНТОВ С СОХРАНЕНИЕМ ПРОБЕЛОВ
+// ------------------------------------------------------------
+
 async function translateSegment(env, seg) {
   if (!/\p{L}/u.test(seg)) return seg;
+
   const lead = seg.match(/^\s*/)[0];
   const trail = seg.match(/\s*$/)[0];
-  const core = seg.slice(lead.length, seg.length - trail.length);
+
+  const core = seg.slice(
+    lead.length,
+    seg.length - trail.length
+  );
+
+  if (!core) return seg;
+
   return lead + (await translatePlainText(env, core)) + trail;
 }
 
+// ------------------------------------------------------------
+// ПЕРЕВОД ТЕКСТА С ЗАЩИТОЙ НАЗВАНИЙ
+// ------------------------------------------------------------
+
 async function translateText(env, text, locationName = '') {
   const source = String(text || '');
+
   if (!source.trim()) return '';
 
   const spans = findProtectedSpans(source, locationName);
 
   // Если весь текст — название улицы или места,
-  // не вызываем модель вообще.
+  // не вызываем модель.
   if (
     spans.length === 1 &&
     spans[0].start === 0 &&
@@ -266,24 +361,32 @@ async function translateText(env, text, locationName = '') {
   let cursor = 0;
 
   for (const span of spans) {
-    // Переводим только обычный текст перед защищённым названием.
+    // Переводим обычный текст перед названием.
     if (span.start > cursor) {
       const plain = source.slice(cursor, span.start);
       output.push(await translateSegment(env, plain));
     }
 
-    // Название улицы или места вставляем без изменений.
+    // Название вставляем без изменений.
     output.push(source.slice(span.start, span.end));
+
     cursor = span.end;
   }
 
-  // Переводим остаток строки после последнего защищённого фрагмента.
+  // Переводим остаток после последнего защищённого фрагмента.
   if (cursor < source.length) {
-    output.push(await translateSegment(env, source.slice(cursor)));
+    output.push(
+      await translateSegment(env, source.slice(cursor))
+    );
   }
 
+  // Не допускаем склеивания слов на границах фрагментов.
   return output.join('').replace(/[ \t]{2,}/g, ' ').trim();
 }
+
+// ------------------------------------------------------------
+// ЧТЕНИЕ ПЕРЕВОДОВ ИЗ D1
+// ------------------------------------------------------------
 
 async function readTranslationRows(env, ids) {
   if (!ids.length) return [];
@@ -291,7 +394,13 @@ async function readTranslationRows(env, ids) {
   const placeholders = ids.map(() => '?').join(',');
 
   const result = await env.DB.prepare(
-    `SELECT event_id,text_type,src_hash,translated_text,original_text,updated_at
+    `SELECT
+       event_id,
+       text_type,
+       src_hash,
+       translated_text,
+       original_text,
+       updated_at
      FROM translations
      WHERE target_lang = 'ru'
        AND event_id IN (${placeholders})`
@@ -314,8 +423,10 @@ function groupTranslationRows(rows) {
   return grouped;
 }
 
-// Ищем именно события с отсутствующими или устаревшими переводами.
-// NULL src_hash после ручного сброса также считается ожидающей обработкой записью.
+// ------------------------------------------------------------
+// ПОИСК СОБЫТИЙ, ОЖИДАЮЩИХ ПЕРЕВОДА
+// ------------------------------------------------------------
+
 async function findPendingEvents(env, limit = SCAN_LIMIT) {
   const result = await env.DB.prepare(
     `SELECT
@@ -352,22 +463,46 @@ async function findPendingEvents(env, limit = SCAN_LIMIT) {
          )
        )
      ORDER BY
-       CASE WHEN tt.id IS NULL OR tt.src_hash IS NULL THEN 0 ELSE 1 END,
+       CASE
+         WHEN tt.id IS NULL OR tt.src_hash IS NULL THEN 0
+         ELSE 1
+       END,
        COALESCE(tt.updated_at, e.received_at, e.published_at) ASC
      LIMIT ?`
-  ).bind(Math.max(1, Math.min(Number(limit) || SCAN_LIMIT, 1000))).all();
+  ).bind(
+    Math.max(1, Math.min(Number(limit) || SCAN_LIMIT, 1000))
+  ).all();
 
   return result.results || [];
 }
 
-async function saveTranslation(env, event, hash, title, description) {
+// ------------------------------------------------------------
+// СОХРАНЕНИЕ ПЕРЕВОДОВ
+// ------------------------------------------------------------
+
+async function saveTranslation(
+  env,
+  event,
+  hash,
+  title,
+  description
+) {
   const now = ISO(Date.now());
 
   const statements = [
     env.DB.prepare(
       `INSERT INTO translations (
-         id,event_id,source_lang,target_lang,original_text,translated_text,
-         model,created_at,updated_at,src_hash,text_type
+         id,
+         event_id,
+         source_lang,
+         target_lang,
+         original_text,
+         translated_text,
+         model,
+         created_at,
+         updated_at,
+         src_hash,
+         text_type
        )
        VALUES (?,?,'de','ru',?,?,?,?,?,?,'title')
        ON CONFLICT(event_id,target_lang,text_type)
@@ -393,8 +528,17 @@ async function saveTranslation(env, event, hash, title, description) {
     statements.push(
       env.DB.prepare(
         `INSERT INTO translations (
-           id,event_id,source_lang,target_lang,original_text,translated_text,
-           model,created_at,updated_at,src_hash,text_type
+           id,
+           event_id,
+           source_lang,
+           target_lang,
+           original_text,
+           translated_text,
+           model,
+           created_at,
+           updated_at,
+           src_hash,
+           text_type
          )
          VALUES (?,?,'de','ru',?,?,?,?,?,?,'description')
          ON CONFLICT(event_id,target_lang,text_type)
@@ -426,13 +570,23 @@ async function saveTranslation(env, event, hash, title, description) {
     );
   }
 
-  // Обе записи сохраняются одной D1 batch-операцией.
+  // Обе операции выполняются одной D1 batch-операцией.
   await env.DB.batch(statements);
 }
 
-export async function translatePending(env, { limit = PER_RUN } = {}) {
+// ------------------------------------------------------------
+// ОСНОВНАЯ ОЧЕРЕДЬ ПЕРЕВОДА
+// ------------------------------------------------------------
+
+export async function translatePending(
+  env,
+  { limit = PER_RUN } = {}
+) {
   if (!env.AI || typeof env.AI.run !== 'function') {
-    console.warn('[translate] пропуск: Workers AI binding недоступен');
+    console.warn(
+      '[translate] пропуск: Workers AI binding недоступен'
+    );
+
     return {
       skipped: 'no AI binding',
       translated: 0,
@@ -441,7 +595,10 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
     };
   }
 
-  const safeLimit = Math.max(0, Math.min(Number(limit) || PER_RUN, 50));
+  const safeLimit = Math.max(
+    0,
+    Math.min(Number(limit) || PER_RUN, 50)
+  );
 
   if (safeLimit === 0) {
     return {
@@ -473,16 +630,26 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
   let failed = 0;
   let lastError = null;
   let streak = 0;
+
   const failures = [];
 
   for (const event of todo) {
     try {
-      const hash = textHash(event.title, event.description);
+      const hash = textHash(
+        event.title,
+        event.description
+      );
 
-      // Заголовок Autobahn («A46 | Wuppertal-Barmen - Holtkamp») состоит из номера трассы и названий мест: не переводим.
-      const translatedTitle = event.source === 'autobahn'
-        ? String(event.title || '').trim()
-        : await translateText(env, truncate(event.title || '', 300), event.location_name);
+      // Заголовки Autobahn содержат названия трасс и мест.
+      // Не переводим их.
+      const translatedTitle =
+        event.source === 'autobahn'
+          ? String(event.title || '').trim()
+          : await translateText(
+              env,
+              truncate(event.title || '', 300),
+              event.location_name
+            );
 
       let translatedDescription = null;
 
@@ -509,6 +676,7 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
     } catch (error) {
       failed++;
       streak++;
+
       lastError = error?.message || String(error);
 
       failures.push({
@@ -520,8 +688,8 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
         `[translate] ERROR ${event.id}: ${lastError}`
       );
 
-      // Одно сломанное событие очередь не останавливает, но три сбоя подряд значат, что модель недоступна
-      // или квота исчерпана: не тратим на это запросы, следующая попытка при следующем запуске.
+      // Три ошибки подряд — вероятно, проблема с AI или квотой.
+      // Оставшиеся события будут обработаны следующим запуском.
       if (streak >= 3) break;
     }
   }
@@ -529,17 +697,26 @@ export async function translatePending(env, { limit = PER_RUN } = {}) {
   const result = {
     translated: translatedCount,
     failed,
-    pending: Math.max(0, candidates.length - translatedCount - failed),
+    pending: Math.max(
+      0,
+      candidates.length - translatedCount - failed
+    ),
     scanned: candidates.length,
     attempted: todo.length,
     error: lastError,
     failures
   };
 
-  console.log(`[translate] итог: ${JSON.stringify(result)}`);
+  console.log(
+    `[translate] итог: ${JSON.stringify(result)}`
+  );
 
   return result;
 }
+
+// ------------------------------------------------------------
+// ЗАГРУЗКА ПЕРЕВОДОВ ДЛЯ ПУБЛИЧНОГО API
+// ------------------------------------------------------------
 
 export async function loadTranslations(env, ids) {
   const map = new Map();
@@ -565,7 +742,8 @@ export async function loadTranslations(env, ids) {
       map.set(eventId, {
         src_hash: title.src_hash,
         title: title.translated_text,
-        description: saved.description?.translated_text || null
+        description:
+          saved.description?.translated_text || null
       });
     }
   } catch (error) {
