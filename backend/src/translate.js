@@ -16,8 +16,6 @@ const SCAN_LIMIT = 500;
 // ЗАЩИТА НАЗВАНИЙ УЛИЦ И МЕСТ
 // ------------------------------------------------------------
 
-// Латинские буквы используются для распознавания немецких названий.
-// Кириллица после названия не мешает его обнаружению.
 const NAME_CHARS = String.raw`[\p{Script=Latin}\p{M}0-9'’-]`;
 
 const LEFT_BOUNDARY = String.raw`(?<![\p{Script=Latin}\p{N}])`;
@@ -29,7 +27,6 @@ const SUFFIX_JOINED =
 const SUFFIX_SEPARATE =
   '(?:Straße|Strasse|Str\\.|Weg|Platz|Allee|Ring|Gasse|Ufer|Damm|Markt|Brücke|Promenade)';
 
-// Слова, с которых название обычно не начинается.
 const NOT_A_NAME =
   '(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einer|Auf|An|Am|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung)';
 
@@ -46,8 +43,6 @@ const PLACE_SEPARATE = new RegExp(
 );
 
 // Названия, соединённые дефисами.
-// «Wuppertal-Barmen», «Wuppertal-Ronsdorf»,
-// «Max-Horkheimer-Straße», «W-Wichlinghausen».
 const TOKEN = String.raw`\p{Lu}[\p{Script=Latin}\p{M}'’]*`;
 const HYPHENATED = String.raw`${TOKEN}(?:-${TOKEN})*`;
 
@@ -56,8 +51,7 @@ const PLACE_HYPHEN = new RegExp(
   'gu'
 );
 
-// Географические названия после вводных слов:
-// «Richtung Köln», «AS Barmen», «Dreieck Nord».
+// Географические названия после вводных слов.
 const LEAD_WORDS =
   '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD)';
 
@@ -72,7 +66,6 @@ const PLACE_AFTER_BETWEEN = new RegExp(
 );
 
 // Известные города, районы и географические названия.
-// Добавлены Wichlinghausen, Freudenberg и другие районы.
 const PLACE_KNOWN = new RegExp(
   String.raw`${LEFT_BOUNDARY}(?:Wuppertal|Elberfeld|Barmen|Oberbarmen|Unterbarmen|Heckinghausen|Langerfeld|Beyenburg|Ronsdorf|Cronenberg|Vohwinkel|Uellendahl|Katernberg|Sonnborn|Wichlinghausen|Wichlinghauser|Freudenberg|Solingen|Remscheid|Hagen|Velbert|Haan|Hilden|Mettmann|Schwelm|Gevelsberg|Sprockhövel|Düsseldorf|Köln|Dortmund|Essen|Bochum|Leverkusen|Hattingen|Recklinghausen|Bruchmühle|Scherenberg|Untenrohleder|Elisabetheim|Holtkamp|BEK)(?![\p{Script=Latin}\p{N}])`,
   'gu'
@@ -189,20 +182,13 @@ export function findProtectedSpans(text, locationName = '') {
     collect(pattern);
   }
 
-  // Улицы с присоединёнными окончаниями.
   collect(PLACE_JOINED, (m) => !COMMON_NOUNS.test(m));
-
-  // Улицы с отдельным окончанием.
   collect(PLACE_SEPARATE);
-
-  // Составные географические названия.
   collect(PLACE_HYPHEN);
 
-  // Географические названия после вводных слов.
   collect(PLACE_AFTER_LEAD, (m) => !NOT_NAME_WORD.test(m));
   collect(PLACE_AFTER_BETWEEN, (m) => !NOT_NAME_WORD.test(m));
 
-  // Известные города и районы.
   collect(PLACE_KNOWN);
 
   if (!spans.length) return [];
@@ -306,6 +292,7 @@ async function translatePlainText(env, text) {
       translatedChunks.push(await callAI(env, chunk));
     }
 
+    // Между частями длинной строки всегда оставляем пробел.
     translatedLines.push(translatedChunks.join(' '));
   }
 
@@ -428,6 +415,11 @@ function groupTranslationRows(rows) {
 // ------------------------------------------------------------
 
 async function findPendingEvents(env, limit = SCAN_LIMIT) {
+  const safeLimit = Math.max(
+    1,
+    Math.min(Number(limit) || SCAN_LIMIT, 1000)
+  );
+
   const result = await env.DB.prepare(
     `SELECT
        e.id,
@@ -444,7 +436,7 @@ async function findPendingEvents(env, limit = SCAN_LIMIT) {
        ON td.event_id = e.id
        AND td.target_lang = 'ru'
        AND td.text_type = 'description'
-     WHERE e.status IN ('LIVE','ACTIVE','RECENT')
+     WHERE e.status IN ('LIVE', 'ACTIVE', 'RECENT', 'RESOLVED')
        AND (
          tt.id IS NULL
          OR tt.src_hash IS NULL
@@ -467,11 +459,13 @@ async function findPendingEvents(env, limit = SCAN_LIMIT) {
          WHEN tt.id IS NULL OR tt.src_hash IS NULL THEN 0
          ELSE 1
        END,
-       COALESCE(tt.updated_at, e.received_at, e.published_at) ASC
+       COALESCE(
+         tt.updated_at,
+         e.received_at,
+         e.published_at
+       ) ASC
      LIMIT ?`
-  ).bind(
-    Math.max(1, Math.min(Number(limit) || SCAN_LIMIT, 1000))
-  ).all();
+  ).bind(safeLimit).all();
 
   return result.results || [];
 }
@@ -595,10 +589,11 @@ export async function translatePending(
     };
   }
 
-  const safeLimit = Math.max(
-    0,
-    Math.min(Number(limit) || PER_RUN, 50)
-  );
+  const requestedLimit = Number(limit);
+
+  const safeLimit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(Math.floor(requestedLimit), 50))
+    : PER_RUN;
 
   if (safeLimit === 0) {
     return {
@@ -622,7 +617,8 @@ export async function translatePending(
       translated: 0,
       failed: 0,
       pending: 0,
-      scanned: candidates.length
+      scanned: candidates.length,
+      attempted: 0
     };
   }
 
@@ -641,7 +637,7 @@ export async function translatePending(
       );
 
       // Заголовки Autobahn содержат названия трасс и мест.
-      // Не переводим их.
+      // Заголовки не переводим, но сохраняем в таблице.
       const translatedTitle =
         event.source === 'autobahn'
           ? String(event.title || '').trim()
@@ -702,7 +698,7 @@ export async function translatePending(
       candidates.length - translatedCount - failed
     ),
     scanned: candidates.length,
-    attempted: todo.length,
+    attempted: translatedCount + failed,
     error: lastError,
     failures
   };
