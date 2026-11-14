@@ -92,6 +92,13 @@ export function parseSchedule(text, now) {
   }
   const past = windows.filter((w) => w.start <= now).sort((x, y) => y.start - x.start)[0];
   if (past) return { ms: past.start, precision: 'minute' };
+  // Ничего не идёт и не прошло: ближайшее запланированное начало, прямо названное в тексте («16.11.26 von 09:00 bis 15:00»)
+  const next = windows.filter((w) => w.start > now).sort((x, y) => x.start - y.start)[0];
+  if (next) return { ms: next.start, precision: 'minute' };
+  if (b) {
+    const ms = toMs(b[1], b[2], b[3], b[4] ?? null, b[5] ?? 0);
+    if (ms != null) return { ms, precision: b[4] != null ? 'minute' : 'day' };
+  }
   return { ms: null, precision: 'unknown' };
 }
 
