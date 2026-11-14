@@ -21,6 +21,11 @@ window.WL_ICONS = (() => {
     damage: [P('M4 21V9l8-5 8 5v12M3 21h18M12 12l-2 3 3 1-1.5 3')],
     waves: [P('M2 10c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 15c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 20c2-2 4-2 6 0s4 2 6 0 4-2 6 0')],
     rain: [P('M7 14a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 7.5 3.5 3.5 0 0 1 17 14H7z'), P('M8 17v3M12 17v3M16 17v3')],
+    wind: [P('M3 8h11a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h7')],
+    snow: [P('M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9M9.5 4.5L12 6.5l2.5-2M9.5 19.5L12 17.5l2.5 2')],
+    sun: [C(12, 12, 4), P('M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6L7 7M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4')],
+    cloud: [P('M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5 4 4 0 0 1 17 18H7z')],
+    exit: [P('M4 21V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v17M2 21h14M10 12h.01M17 8l4 4-4 4M21 12h-8')],
     bell: [P('M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21a2 2 0 0 0 4 0')],
     calendar: [P('M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z'), P('M3 10h18M8 3v4M16 3v4')],
     people: [C(9, 8, 3), C(17, 9, 2.5), P('M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M15.5 14.5c3 .2 5.5 2.2 5.5 5.5')],
@@ -38,10 +43,11 @@ window.WL_ICONS = (() => {
 
   // категория -> имя иконки
   const BY_CATEGORY = {
-    fire: 'fire', accident: 'burst', police: 'siren', rescue: 'cross', hazard: 'hazard', emergency_other: 'alert',
+    fire: 'fire', accident: 'burst', police: 'siren', rescue: 'cross', hazard: 'hazard', evacuation: 'exit', emergency_other: 'alert',
     road_jam: 'jam', road_closure: 'closed', road_accident: 'burst', roadworks: 'cone', road_obstacle: 'hazard', traffic_other: 'road',
     transit_delay: 'bus', transit_cancel: 'bus', transit_detour: 'bus', transit_stop: 'bus',
     infra_power: 'bolt', infra_water: 'drop', infra_damage: 'damage', flood: 'waves', heavy_rain: 'rain', warning_other: 'bell',
+    weather_storm: 'wind', weather_thunder: 'bolt', weather_ice: 'snow', weather_heat: 'sun', weather_other: 'cloud',
     event_big: 'calendar', event_crowd: 'people', event_restriction: 'banned'
   };
   const BY_GROUP = { emergency: 'siren', traffic: 'jam', roadworks: 'cone', transit: 'bus', infra: 'bell', events: 'calendar' };
