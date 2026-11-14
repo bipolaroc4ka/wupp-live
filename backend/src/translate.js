@@ -4,6 +4,7 @@
 // Ошибка одного события не останавливает обработку остальных.
 
 import { ISO, truncate } from './util.js';
+import { translateStructured } from './structured.js';
 
 const MODEL = '@cf/meta/m2m100-1.2b';           // запасной движок: маленькая модель-переводчик
 const DEFAULT_LLM = '@cf/google/gemma-3-12b-it'; // языковая модель Workers AI (можно заменить переменной TRANSLATE_MODEL)
@@ -603,8 +604,26 @@ async function translateM2m(env, event, keepTitle = false) {
 }
 
 // Заголовок Autobahn («A46 | Wuppertal-Barmen - Holtkamp») состоит из номера трассы и названий мест: не переводим.
+// Перевод свободного текста внутри структурированного описания теми же средствами, что и обычный перевод
+async function translateValue(env, engine, event, text) {
+  if (engine === 'deepl') {
+    const r = await translateDeepL(env, { ...event, title: '', description: text }, true);
+    return r.description || text;
+  }
+  return translateText(env, truncate(text, MAX_DESC), event.location_name);
+}
+
 async function translateEvent(env, event, engine) {
   const keepTitle = event.source === 'autobahn';
+  // Autobahn/Mobidrom: описание из строк «Подпись: значение» переводится по правилам (подписи, даты, единицы, объезд),
+  // а модель получает только свободный текст
+  if ((event.source === 'autobahn' || event.source === 'mobidrom') && event.description) {
+    const ruDescription = await translateStructured(event.description, (t) => translateValue(env, engine, event, t));
+    if (ruDescription) {
+      const base = keepTitle ? { title: String(event.title || '').trim() } : await translateEvent(env, { ...event, description: null }, engine);
+      return { title: base.title, description: ruDescription, model: 'rules+' + engine };
+    }
+  }
   const run = async (kind) => {
     if (kind === 'deepl') return translateDeepL(env, event, keepTitle);
     if (kind === 'llm') return translateLlm(env, event);
