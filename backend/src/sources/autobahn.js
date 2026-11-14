@@ -10,6 +10,7 @@
 import { CITY, inCityBbox } from '../config.js';
 import { fetchJson } from '../util.js';
 import { syncSource } from '../events.js';
+import { berlinToUtc } from '../time.js';
 
 export const meta = {
   id: 'autobahn',
@@ -42,6 +43,51 @@ function extentIntersects(ext) {
   return !(maxLon < b.minLon || minLon > b.maxLon || maxLat < b.minLat || minLat > b.maxLat);
 }
 
+// ---------- сроки из текста описания ----------
+// В реальных ответах startTimestamp нет, а сроки лежат в строках description:
+//   «Die Baustelle ist zu folgenden Zeiträumen gültig:» / «14.11.26 03:00 bis zum 15.11.26 23:00 Uhr.»
+//   «Zeitraum dieser Bauphase:» / «Beginn: 07.11.25 um 20:00 Uhr»
+//   «(Ende der Gesamtmaßnahme: 01.01.31)»
+const D = String.raw`(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})`;
+const T = String.raw`(\d{1,2}):(\d{2})`;
+const RE_PERIOD = new RegExp(`${D}\\s+(?:um\\s+)?${T}\\s+bis(?:\\s+zum)?\\s+${D}\\s+(?:um\\s+)?${T}`, 'g');
+const RE_BEGIN = new RegExp(`Beginn:\\s*${D}(?:\\s+um\\s+${T})?`, 'i');
+
+function toMs(d, m, y, h = null, mi = 0) {
+  let year = Number(y);
+  if (year < 100) year += 2000;
+  const day = Number(d), month = Number(m);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const chk = new Date(Date.UTC(year, month - 1, day));
+  if (chk.getUTCMonth() !== month - 1 || chk.getUTCDate() !== day) return null;
+  if (h != null && (Number(h) > 23 || Number(mi) > 59)) return null;
+  return berlinToUtc(year, month, day, h == null ? 0 : Number(h), Number(mi));
+}
+
+/**
+ * Начало «текущего» периода по тексту: идущее сейчас окно, иначе «Beginn:», иначе последнее прошедшее окно.
+ * Только то, что явно написано в тексте; иначе { ms: null }.
+ */
+export function parseSchedule(text, now) {
+  const windows = [];
+  for (const m of String(text || '').matchAll(RE_PERIOD)) {
+    const start = toMs(m[1], m[2], m[3], m[4], m[5]);
+    const end = toMs(m[6], m[7], m[8], m[9], m[10]);
+    if (start != null && end != null && end >= start) windows.push({ start, end });
+  }
+  const current = windows.find((w) => w.start <= now && now <= w.end);
+  if (current) return { ms: current.start, precision: 'minute' };
+
+  const b = RE_BEGIN.exec(String(text || ''));
+  if (b) {
+    const ms = toMs(b[1], b[2], b[3], b[4] ?? null, b[5] ?? 0);
+    if (ms != null && ms <= now) return { ms, precision: b[4] != null ? 'minute' : 'day' };
+  }
+  const past = windows.filter((w) => w.start <= now).sort((x, y) => y.start - x.start)[0];
+  if (past) return { ms: past.start, precision: 'minute' };
+  return { ms: null, precision: 'unknown' };
+}
+
 function classifyWarning(text) {
   const t = text.toLowerCase();
   if (/unfall/.test(t)) return 'road_accident';
@@ -50,7 +96,7 @@ function classifyWarning(text) {
   return 'traffic_other';
 }
 
-function toItem(it, road, type) {
+function toItem(it, road, type, now = Date.now()) {
   if (it.future === true || it.future === 'true') return null;
   const { lat, lon } = coordOf(it);
   const hasCoord = lat != null && lon != null;
@@ -60,9 +106,14 @@ function toItem(it, road, type) {
   const lines = Array.isArray(it.description) ? it.description : (it.description ? [it.description] : []);
   const descParts = [it.subtitle, ...lines].filter(Boolean).map((s) => String(s).trim()).filter(Boolean);
   if (type === 'roadworks' && (it.isBlocked === true || it.isBlocked === 'true')) descParts.push('Vollsperrung');
+  const route = (Array.isArray(it.routeRecommendation) ? it.routeRecommendation : [])
+    .map((x) => String(x || '').trim()).filter(Boolean);
+  if (route.length) descParts.push(`Umleitung: ${route.join(' ')}`);
   const text = `${it.title || ''} ${descParts.join(' ')}`;
 
-  const start = Date.parse(it.startTimestamp || '');
+  const stamped = Date.parse(it.startTimestamp || '');
+  const parsed = Number.isFinite(stamped) ? { ms: stamped, precision: 'minute' } : parseSchedule(lines.join('\n'), now);
+  const start = parsed.ms ?? NaN;
   const category = type === 'roadworks' ? 'roadworks' : type === 'closure' ? 'road_closure' : classifyWarning(text);
 
   return {
@@ -78,7 +129,7 @@ function toItem(it, road, type) {
     geo_precision: hasCoord ? 'source' : 'none',
     location_name: it.subtitle ? String(it.subtitle).trim() : `${road}`,
     event_time: Number.isFinite(start) ? new Date(start).toISOString() : null,
-    time_precision: Number.isFinite(start) ? 'minute' : 'unknown',
+    time_precision: Number.isFinite(start) ? parsed.precision : 'unknown',
     published_at: null, // источник не сообщает время публикации
     status: type === 'warning' ? 'LIVE' : 'ACTIVE',
     status_reason: 'listed_in_current_source_feed',
@@ -106,7 +157,7 @@ export async function run(ctx) {
       okScopes.add(`${road}/${t.path}`);
       if (status === 204) return;
       for (const raw of listOf(json, t.key)) {
-        const item = toItem(raw, road, t.path);
+        const item = toItem(raw, road, t.path, ctx.now);
         if (item) items.push(item);
       }
     } catch (e) {
@@ -122,6 +173,20 @@ export async function run(ctx) {
 
 export async function probe(ctx) {
   const road = (ctx.env.AUTOBAHN_ROADS || 'A46').split(',')[0].trim();
-  const { text } = await fetchJson(`${BASE}/${road}/services/closure`);
-  return { url: `${BASE}/${road}/services/closure`, sample: text.slice(0, 1500) };
+  const out = { road, types: {} };
+  for (const t of TYPES) {
+    const url = `${BASE}/${road}/services/${t.path}`;
+    try {
+      const { json, text } = await fetchJson(url, { retries: 0 });
+      const all = listOf(json, t.key);
+      const inCity = all.map((raw) => toItem(raw, road, t.path, ctx.now)).filter(Boolean);
+      out.types[t.path] = {
+        url, total: all.length, in_city: inCity.length,
+        // что разобрано из текста: проверьте, что event_time и описание соответствуют строкам источника
+        city_samples: inCity.slice(0, 3).map((i) => ({ title: i.title, event_time: i.event_time, time_precision: i.time_precision, description: (i.description || '').slice(0, 400) })),
+        raw_sample: text.slice(0, 800)
+      };
+    } catch (e) { out.types[t.path] = { url, error: e.message }; }
+  }
+  return out;
 }
