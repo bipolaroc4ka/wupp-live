@@ -33,7 +33,7 @@ const HYPHENATED = String.raw`${TOKEN}(?:-${TOKEN})*`;
 // «Wuppertal-Barmen», «Wuppertal-Oberbarmen»: слова с заглавной буквы, соединённые дефисом, это почти всегда названия
 const PLACE_HYPHEN = new RegExp(String.raw`(?<![\p{Script=Latin}\p{N}-])${TOKEN}(?:-${TOKEN})+${RIGHT_BOUNDARY}`, 'gu');
 // «Richtung Köln», «zwischen Holtkamp und Wuppertal-Barmen», «AS Barmen», «Dreieck Nord»
-const LEAD_WORDS = '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD|Stadt|Gemeinde|Gde\\.|Kreis|Landkreis|Ortsteil|Ortsteile|Stadtteil|Stadtteile|Samtgemeinde|Verbandsgemeinde|Stadtbezirk)';
+const LEAD_WORDS = '(?:Richtung|zwischen|Anschlussstelle|Autobahnkreuz|Autobahndreieck|Dreieck|Kreuz|AS|AK|AD|Ecke|Einmündung|Stadt|Gemeinde|Gde\\.|Kreis|Landkreis|Ortsteil|Ortsteile|Stadtteil|Stadtteile|Samtgemeinde|Verbandsgemeinde|Stadtbezirk)';
 const PLACE_AFTER_LEAD = new RegExp(String.raw`(?<=${LEAD_WORDS}[ \t]+)${HYPHENATED}${RIGHT_BOUNDARY}`, 'gu');
 const PLACE_AFTER_BETWEEN = new RegExp(String.raw`(?<=zwischen[ \t]+${HYPHENATED}[ \t]+und[ \t]+)${HYPHENATED}${RIGHT_BOUNDARY}`, 'gu');
 // районы Вупперталя и ближайшие города: «Barmen» модель иначе читает как «бармен»
