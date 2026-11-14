@@ -209,6 +209,62 @@ function chooseWorkLocation(values, location) {
   return { text: fallback, street: fallback ? extractStreet(fallback) : null };
 }
 
+// ---------- структурированные признаки DATEX II (не зависят от текста комментариев) ----------
+
+const FULL_CLOSURE = /^(?:roadclosed|carriagewayclosures?|roadblocked|carriagewayblocked|closed)$/i;
+const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const DAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+const WORK_LABELS = [
+  [/bridge/i, 'Brückenarbeiten'], [/resurfac/i, 'Fahrbahnerneuerung'], [/repair/i, 'Reparaturarbeiten'],
+  [/marking/i, 'Markierungsarbeiten'], [/tree|vegetation|grass/i, 'Baum- und Grünschnitt'], [/clean/i, 'Reinigung'],
+  [/lighting|sign|signal|install/i, 'Installationsarbeiten'], [/gas|water|electric|cable|pipe|sewer/i, 'Leitungsarbeiten'],
+  [/construction/i, 'Bauarbeiten'], [/maintenance/i, 'Wartungsarbeiten']
+];
+
+const intOrNull = (v) => (v != null && /^\d{1,2}$/.test(String(v).trim()) ? Number(v) : null);
+const hhmm = (v) => (/^(\d{2}:\d{2})/.exec(String(v || '')) || [])[1] || null;
+
+function daysLabel(values) {
+  const idx = [...new Set(values.map((v) => DAY_ORDER.indexOf(String(v).toLowerCase())).filter((i) => i >= 0))].sort((a, b) => a - b);
+  if (!idx.length || idx.length === 7) return '';
+  const consecutive = idx.every((v, i) => i === 0 || v === idx[i - 1] + 1);
+  return consecutive && idx.length >= 3
+    ? `${DAY_LABELS[idx[0]]}–${DAY_LABELS[idx[idx.length - 1]]}`
+    : idx.map((i) => DAY_LABELS[i]).join(', ');
+}
+
+function structuredData(block) {
+  const management = ['roadOrCarriagewayOrLaneManagementType', 'trafficConstrictionType', 'networkManagementType']
+    .flatMap((tag) => tagValues(block, tag));
+  const kinds = ['roadMaintenanceType', 'constructionWorkType', 'roadworksType', 'maintenanceWorkType']
+    .flatMap((tag) => tagValues(block, tag));
+  const labels = [...new Set(kinds.map((k) => (WORK_LABELS.find(([re]) => re.test(k)) || [])[1]).filter(Boolean))];
+
+  const restricted = intOrNull(firstTag(block, ['numberOfLanesRestricted']));
+  const operational = intOrNull(firstTag(block, ['numberOfOperationalLanes']));
+  let lanes = null;
+  if (restricted != null && operational != null) lanes = `${restricted} eingeschränkt, ${operational} befahrbar`;
+  else if (restricted != null) lanes = `${restricted} eingeschränkt`;
+
+  const starts = tagValues(block, 'startTimeOfPeriod').map(hhmm).filter(Boolean);
+  const ends = tagValues(block, 'endTimeOfPeriod').map(hhmm).filter(Boolean);
+  const days = daysLabel(tagValues(block, 'applicableDay'));
+  const window = starts.length && ends.length ? `${days ? `${days} ` : ''}${starts[0]}–${ends[0]}` : null;
+
+  const status = String(firstTag(block, ['validityStatus']) || '').toLowerCase();
+  const probability = String(firstTag(block, ['probabilityOfOccurrence']) || '').toLowerCase();
+
+  return {
+    hasStructure: management.length > 0,
+    closure: management.some((v) => FULL_CLOSURE.test(v)),
+    workTypes: labels,
+    lanes,
+    window,
+    suspended: status === 'suspended',
+    uncertain: probability === 'riskof' || probability === 'probable'
+  };
+}
+
 function parseRecord(block) {
   const attributes = openingAttributes(block, 'situationRecord');
   const type = attributeValue(attributes, ['xsi:type', 'type']) || '';
@@ -241,8 +297,10 @@ function parseRecord(block) {
   ]));
   const end = parseDate(firstTag(block, ['overallEndTime', 'endOfPeriod']));
   const geo = coordinateData(block);
+  const structured = structuredData(block);
 
   return {
+    ...structured,
     id: elementId(block, 'situationRecord'),
     type,
     title: truncate(title || 'Baustelle', 220),
@@ -311,6 +369,13 @@ function parseSituation(block) {
     coordinates: centroid(allPoints),
     hasGeometry: records.some((r) => r.hasGeometry),
     outsideCityHint: records.some((r) => r.outsideCityHint),
+    hasStructure: records.some((r) => r.hasStructure),
+    closure: records.some((r) => r.closure),
+    workTypes: [...new Set(records.flatMap((r) => r.workTypes))],
+    lanes: records.map((r) => r.lanes).find(Boolean) || null,
+    window: records.map((r) => r.window).find(Boolean) || null,
+    suspended: records.every((r) => r.suspended),
+    uncertain: records.every((r) => r.uncertain),
     cityCoordinateCount: allPoints.length,
     recordTypes: records.map((r) => r.type)
   };
@@ -333,6 +398,7 @@ async function makeEvent(ctx, situation) {
   ].filter(Boolean).join(' ');
 
   if (situation.outsideCityHint) return null;
+  if (situation.suspended) return null; // работы приостановлены (validityStatus = suspended)
 
   let point = situation.coordinates;
   let precision = point ? 'source' : 'none';
@@ -365,13 +431,10 @@ async function makeEvent(ctx, situation) {
   if (situation.end && situation.end < ctx.now) return null;
   if (situation.start && situation.start > ctx.now + MAX_FUTURE_DAYS * DAY) return null;
 
-  const endExpiry = situation.end ? situation.end + 2 * DAY : 0;
-  const startExpiry = situation.start ? situation.start + EVENT_TTL_DAYS * DAY : 0;
-  const expiresAt = Math.max(
-    ctx.now + EVENT_TTL_DAYS * DAY,
-    endExpiry,
-    startExpiry
-  );
+  // Срок: конец работ + 2 дня. Если конца нет, срока нет: запись закрывается, когда исчезает из полной ленты
+  // (resolveMissing). Раньше срок считался от «сейчас» и сдвигался при каждом запуске: менялся хэш записи,
+  // а событие никогда не истекало.
+  const expiresAt = situation.end ? situation.end + 2 * DAY : null;
 
   const stableId = situation.id || [
     situation.title,
@@ -380,13 +443,21 @@ async function makeEvent(ctx, situation) {
   ].join('|');
 
   const isScheduled = situation.start && situation.start > ctx.now;
+  const extras = [
+    situation.workTypes.length ? `Art der Arbeiten: ${situation.workTypes.join(', ')}` : null,
+    situation.lanes ? `Fahrstreifen: ${situation.lanes}` : null,
+    situation.window ? `Zeitfenster: ${situation.window}` : null
+  ].filter(Boolean);
+  const description = [situation.description, extras.join('\n')].filter(Boolean).join('\n\n');
+  // Если в ленте есть структурированный тип ограничения, он точнее текста («Fahrstreifen gesperrt» ≠ дорога закрыта)
+  const category = situation.hasStructure ? (situation.closure ? 'road_closure' : 'roadworks') : classify(text);
   return {
     source_event_id: await shortId(stableId),
     scope: SCOPE,
     publisher: 'NRW.Mobidrom / Straßen.NRW',
     title: situation.title,
-    description: situation.description || null,
-    category: classify(text),
+    description: description || null,
+    category,
     source_url: FEED_URL,
     latitude: point.lat,
     longitude: point.lon,
@@ -394,14 +465,14 @@ async function makeEvent(ctx, situation) {
     location_name: situation.street || situation.road || situation.location || situation.title,
     district,
     event_time: situation.start ? ISO(situation.start) : null,
-    time_precision: 'minute',
+    time_precision: situation.start ? 'minute' : 'unknown',
     published_at: null,
-    expires_at: ISO(expiresAt),
+    expires_at: expiresAt ? ISO(expiresAt) : null,
     status: 'ACTIVE',
     status_reason: isScheduled
       ? 'scheduled_in_mobidrom_datex_feed'
       : 'listed_in_mobidrom_datex_feed',
-    confidence: precision === 'source' ? 0.9 : 0.65,
+    confidence: precision === 'source' ? (situation.uncertain ? 0.75 : 0.9) : 0.65,
     is_verified: 1
   };
 }
