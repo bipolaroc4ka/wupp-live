@@ -77,8 +77,11 @@ export function cleanText(value) {
 
 // В source_url не должно попасть ничего, кроме веб-адреса.
 export function safeWeb(u) {
+  let v = String(u || '').trim();
+  // NINA часто отдаёт адрес без схемы («www.erkrath.de»)
+  if (v && !/^[a-z][a-z0-9+.-]*:/i.test(v) && /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(v)) v = `https://${v}`;
   try {
-    const x = new URL(String(u || '').trim());
+    const x = new URL(v);
     return x.protocol === 'https:' || x.protocol === 'http:' ? x.href : null;
   } catch { return null; }
 }
