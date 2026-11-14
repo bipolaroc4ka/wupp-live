@@ -23,6 +23,7 @@
 // страны, затрагивающие NRW, или только затрагивающие Вупперталь.
 
 import { CITY } from '../config.js';
+import { berlinToUtc, berlinYMD } from '../time.js';
 import { fetchJson, shortId, truncate as truncateText } from '../util.js';
 import { syncSource, hashOf } from '../events.js';
 
@@ -546,6 +547,24 @@ function minimalItem(raw) {
   };
 }
 
+// Начало, явно названное в тексте: «ab 22:00 Uhr», «ab 22 Uhr», «ab dem 16.11. um 08:00 Uhr», «ab dem 16.11.2026».
+// Дата без указания берётся из даты выпуска предупреждения (берлинское время). Возвращает { ms, precision } или null.
+export function startFromText(text, publishedMs) {
+  const t = String(text || '');
+  const m = /\bab\s+(?:dem\s+)?(?:(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})?\s*(?:,|um)?\s*)?(?:(\d{1,2})(?::|\.)?(\d{2})?\s*Uhr)?/i.exec(t.replace(/(\bab\s+(?:dem\s+)?\d{1,2}\.\d{1,2}\.(?:\d{2,4})?)/gi, '$1 '));
+  if (!m || (m[1] == null && m[4] == null)) return null;
+  const base = Number.isFinite(publishedMs) ? berlinYMD(publishedMs) : null;
+  let y, mo, d;
+  if (m[1] != null) {
+    d = +m[1]; mo = +m[2];
+    y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : base && base.y;
+    if (!y) return null;
+  } else if (base) { ({ y, m: mo, d } = base); } else return null;
+  const h = m[4] != null ? +m[4] : null, mi = m[5] != null ? +m[5] : 0;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || (h != null && (h > 23 || mi > 59))) return null;
+  return { ms: berlinToUtc(y, mo, d, h ?? 0, mi), precision: h != null ? 'minute' : 'day' };
+}
+
 export function buildItem(raw, detail, geojson, scope, now) {
   if (!raw || !raw.id) return null;
   if (String((detail && detail.msgType) || raw.type || '').toLowerCase() === 'cancel') return null;
@@ -580,7 +599,9 @@ export function buildItem(raw, detail, geojson, scope, now) {
     location = truncateText(`Nordrhein-Westfalen${areaNames.length ? ` · ${areaNames.slice(0, 3).join('; ')}` : ''}`, 120);
   }
 
-  const onset = parseDate(firstText(info.onset, info.effective));
+  const publishedMs = parseDate(firstText(detail && detail.sent, raw.startDate));
+  const fromText = startFromText(`${cleanText(info.headline)}\n${cleanText(info.description)}`, Date.parse(publishedMs || ''));
+  const onset = fromText ? new Date(fromText.ms).toISOString() : parseDate(firstText(info.onset, info.effective));
   const severity = [info.severity, raw.severity].find((s) => SEVERITIES.has(s)) || null;
   const text = [title, cleanText(info.headline), cleanText(info.event)].join(' ');
 
@@ -597,7 +618,7 @@ export function buildItem(raw, detail, geojson, scope, now) {
     longitude: lon,
     location_name: location,
     event_time: onset,                       // onset/effective из CAP; startDate в mapData — время выпуска версии, не явления
-    time_precision: onset ? 'minute' : 'unknown',
+    time_precision: onset ? (fromText ? fromText.precision : 'minute') : 'unknown',
     published_at: parseDate(firstText(detail && detail.sent, raw.startDate)),
     status: 'ACTIVE',
     status_reason: `nina_${scope}_warning`,
