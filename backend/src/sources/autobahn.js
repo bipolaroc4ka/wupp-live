@@ -51,6 +51,7 @@ function extentIntersects(ext) {
 const D = String.raw`(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})`;
 const T = String.raw`(\d{1,2}):(\d{2})`;
 const RE_PERIOD = new RegExp(`${D}\\s+(?:um\\s+)?${T}\\s+bis(?:\\s+zum)?\\s+${D}\\s+(?:um\\s+)?${T}`, 'g');
+const RE_END = new RegExp(`(?:^|\\n)\\s*Ende:\\s*${D}(?:\\s+um\\s+${T})?`, 'i');
 const RE_BEGIN = new RegExp(`Beginn:\\s*${D}(?:\\s+um\\s+${T})?`, 'i');
 
 const RE_DAY_WINDOW = new RegExp(`${D}\\s+von\\s+${T}\\s+bis\\s+${T}`, 'g');
@@ -100,6 +101,13 @@ export function parseSchedule(text, now) {
     if (ms != null) return { ms, precision: b[4] != null ? 'minute' : 'day' };
   }
   return { ms: null, precision: 'unknown' };
+}
+
+/** Конец текущей фазы работ («Zeitraum dieser Bauphase: … Ende: 22.01.27 um 22:00 Uhr»), только если он явно указан. */
+export function parsePhaseEnd(text) {
+  const m = RE_END.exec(String(text || ''));
+  if (!m) return null;
+  return toMs(m[1], m[2], m[3], m[4] ?? 23, m[5] ?? 59);
 }
 
 // ---------- читаемое описание ----------
@@ -205,6 +213,8 @@ function toItem(it, road, type, now = Date.now()) {
   const stamped = Date.parse(it.startTimestamp || '');
   const parsed = Number.isFinite(stamped) ? { ms: stamped, precision: 'minute' } : parseSchedule(lines.join('\n'), now);
   const start = parsed.ms ?? NaN;
+  const phaseEnd = parsePhaseEnd(lines.join('\n'));
+  if (phaseEnd != null && phaseEnd <= now) return null; // фаза закончилась: не показываем (иначе статус «мигал» бы)
   const category = type === 'roadworks' ? 'roadworks' : type === 'closure' ? 'road_closure' : classifyWarning(text);
 
   return {
@@ -222,6 +232,7 @@ function toItem(it, road, type, now = Date.now()) {
     event_time: Number.isFinite(start) ? new Date(start).toISOString() : null,
     time_precision: Number.isFinite(start) ? parsed.precision : 'unknown',
     published_at: null, // источник не сообщает время публикации
+    expires_at: phaseEnd != null ? new Date(phaseEnd).toISOString() : null, // конец фазы, если указан в тексте; иначе решает лента
     status: type === 'warning' ? 'LIVE' : 'ACTIVE',
     status_reason: 'listed_in_current_source_feed',
     confidence: hasCoord ? 0.9 : 0.6,
