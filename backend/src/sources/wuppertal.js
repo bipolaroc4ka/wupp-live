@@ -17,7 +17,8 @@ const FEED_URL =
 
 const SCOPE = 'municipal/press-roadworks';
 const MAX_AGE_DAYS = 45;
-const EVENT_TTL_DAYS = 30;
+const EVENT_TTL_DAYS = 30;       // дорожные сообщения
+const TOPIC_TTL_DAYS = 7;        // остальные темы (транспорт, мероприятия, коммунальные сбои)
 const DAY = 86400000;
 
 const ALLOWED_GEO_PRECISIONS = new Set([
@@ -45,6 +46,36 @@ const DISRUPTION_KEYWORDS =
 
 const INFRASTRUCTURE_KEYWORDS =
   /\b(brücke|brücken|tunnel|unterführung|treppe|treppen|geländer|stützmauer|stützwand|kanal|kanäle|gehweg|radweg)\b/i;
+
+// Другие темы из того же RSS. Принимаются только по сильным признакам; всё остальное, как и раньше, отбрасывается.
+const TRANSIT_SUBJECT =
+  /\b(schwebebahn|wsw|buslinie|buslinien|busse|linie\s+\d{3}|ersatzverkehr|schienenersatz|haltestelle|haltestellen|fahrplan|nachtexpress)\b/i;
+const TRANSIT_ACTIONS = [
+  ['transit_stop', /(?:haltestellen?[^.\n]{0,80}(?:nicht\s+(?:bedient|angefahren)|verlegt|entfällt|aufgehoben|verschoben)|nicht\s+(?:bedient|angefahren))/i],
+  ['transit_cancel', /\b(ausfall|fällt\s+aus|fallen\s+aus|eingestellt|ersatzverkehr|schienenersatz|betriebseinstellung|kein\s+betrieb)\b/i],
+  ['transit_detour', /\b(umleitung|umgeleitet|abweichende\s+linienführung|fahren\s+eine\s+umleitung)\b/i],
+  ['transit_delay', /\b(verspätung|verspätungen|verzögerung|verzögerungen|störung|einschränkung|einschränkungen)\b/i]
+];
+const EVENT_SUBJECT =
+  /\b(stadtfest|marathon|halbmarathon|lauf|demonstration|kundgebung|weihnachtsmarkt|karnevalsumzug|karneval|umzug|straßenfest|festival|konzert|großveranstaltung|veranstaltung|kirmes|parade|radrennen)\b/i;
+const EVENT_ACTION =
+  /\b(sperrung|sperrungen|gesperrt|vollsperrung|halteverbot|parkverbot|verkehrseinschränkung|verkehrseinschränkungen|umleitung)\b/i;
+const TOPICS = [
+  ['evacuation', /\b(bombenfund|bombenentschärfung|bombe|blindgänger|kampfmittel|entschärfung|evakuierung)\b/i],
+  ['infra_power', /\b(stromausfall|stromstörung)\b/i],
+  ['infra_water', /\b(wasserrohrbruch|rohrbruch|trinkwasserverunreinigung|trinkwasserversorgung|wasserversorgung|abkochgebot)\b/i],
+  ['infra_damage', /\b(sturmschäden|unwetterschäden|hochwasserschäden|erdrutsch|hangrutsch|umgestürzte[rn]?\s+bäume?)\b/i]
+];
+
+// Тема сообщения, не связанная напрямую с дорожными работами (или null).
+export function classifyTopic(text) {
+  for (const [category, re] of TOPICS) if (re.test(text)) return category;
+  if (TRANSIT_SUBJECT.test(text)) {
+    for (const [category, re] of TRANSIT_ACTIONS) if (re.test(text)) return category;
+  }
+  if (EVENT_SUBJECT.test(text) && EVENT_ACTION.test(text)) return 'event_restriction';
+  return null;
+}
 
 const BOILERPLATE_PATTERNS = [
   /^sie befinden sich hier\b/i,
@@ -700,7 +731,7 @@ function classify(text) {
   }
 
   if (DISRUPTION_KEYWORDS.test(text)) {
-    return 'traffic_disruption';
+    return 'traffic_other';
   }
 
   return 'roadworks';
@@ -711,6 +742,18 @@ function analyzeRoadItem(item) {
   const hasRoadKeyword = ROAD_KEYWORDS.test(text);
   const hasStrongKeyword = STRONG_ROAD_KEYWORDS.test(text);
   const location = extractLocation(text);
+
+  const topic = classifyTopic(text);
+  if (topic) {
+    return {
+      accepted: true,
+      reason: `topic_${topic}`,
+      street: location.streets[0] || null,
+      location,
+      category: topic,
+      topic: true
+    };
+  }
 
   if (!hasRoadKeyword) {
     return {
@@ -846,14 +889,15 @@ async function toEvent(ctx, item, analysis) {
     return null;
   }
 
-  const expiresAt = end
-    ? end.getTime() + 2 * DAY
-    : Math.max(
-        ctx.now + EVENT_TTL_DAYS * DAY,
-        Number.isFinite(publishedMs)
-          ? publishedMs + EVENT_TTL_DAYS * DAY
-          : 0
-      );
+  // Срок считается от даты публикации (а не от «сейчас»): иначе expires_at сдвигался бы при каждом запуске,
+  // менялся бы хэш записи и событие никогда не истекало.
+  const ttlDays = analysis.topic ? TOPIC_TTL_DAYS : EVENT_TTL_DAYS;
+  const base = Number.isFinite(publishedMs) ? publishedMs : Math.floor(ctx.now / DAY) * DAY;
+  const anchor = Math.max(base, start ? start.getTime() : 0);
+  const expiresAt = end ? end.getTime() + 2 * DAY : anchor + ttlDays * DAY;
+
+  // уже истёкшее не сохраняем: иначе статус «мигал» бы между RECENT и EXPIRED
+  if (expiresAt <= ctx.now) return null;
 
   const isScheduled =
     start && start.getTime() > ctx.now;
@@ -876,9 +920,7 @@ async function toEvent(ctx, item, analysis) {
       ? normalizeGeoPrecision(geo.precision)
       : 'none',
 
-    location_name:
-      location.label ||
-      item.title,
+    location_name: location.label || null,
 
     district: hasGeo ? geo.district || null : null,
 
