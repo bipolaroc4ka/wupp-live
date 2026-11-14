@@ -6,13 +6,6 @@
 //   roadworks/closure -> ACTIVE (источник продолжает публиковать)
 //   запись пропала из ленты два запуска подряд -> RESOLVED (см. syncSource)
 // Будущие (future=true) записи не показываются: они ещё не действуют.
-//
-// Семантика времени:
-//   event_time — фактическое время происшествия; Autobahn API его не сообщает.
-//   valid_from — начало действия предупреждения / ограничения / фазы работ.
-//   valid_until — конец текущей фазы, если он указан.
-//   published_at — время публикации; источник его не сообщает.
-//   expires_at — сохраняется для существующего механизма автоматического истечения.
 
 import { CITY, inCityBbox } from '../config.js';
 import { fetchJson } from '../util.js';
@@ -237,21 +230,12 @@ function toItem(it, road, type, now = Date.now()) {
   });
   const text = `${it.title || ''} ${it.subtitle || ''} ${lines.join(' ')} ${route}`;
 
-  // startTimestamp и даты из description — начало действия, а не фактическое время происшествия.
   const stamped = Date.parse(it.startTimestamp || '');
-  const parsed = Number.isFinite(stamped)
-    ? { ms: stamped, precision: 'minute' }
-    : parseSchedule(lines.join('\n'), now);
-
-  const start = parsed.ms ?? null;
+  const parsed = Number.isFinite(stamped) ? { ms: stamped, precision: 'minute' } : parseSchedule(lines.join('\n'), now);
+  const start = parsed.ms ?? NaN;
   const phaseEnd = parseExpiry(lines.join('\n'));
-
   if (phaseEnd != null && phaseEnd <= now) return null; // фаза закончилась: не показываем (иначе статус «мигал» бы)
-
   const category = type === 'roadworks' ? 'roadworks' : type === 'closure' ? 'road_closure' : classifyWarning(text);
-
-  const validFrom = start != null ? new Date(start).toISOString() : null;
-  const validUntil = phaseEnd != null ? new Date(phaseEnd).toISOString() : null;
 
   return {
     source_event_id: `${road}/${type}/${it.identifier}`,
@@ -265,19 +249,10 @@ function toItem(it, road, type, now = Date.now()) {
     longitude: hasCoord ? lon : null,
     geo_precision: hasCoord ? 'source' : 'none',
     location_name: it.subtitle ? String(it.subtitle).trim() : `${road}`,
-
-    // Фактическое время происшествия источник не предоставляет.
-    event_time: null,
-    time_precision: 'unknown',
-
-    // Начало и конец периода действия.
-    valid_from: validFrom,
-    valid_from_precision: validFrom ? (parsed.precision || 'unknown') : 'unknown',
-    valid_until: validUntil,
-    valid_until_precision: validUntil ? (phaseEnd != null ? 'minute' : 'unknown') : 'unknown',
-
+    event_time: Number.isFinite(start) ? new Date(start).toISOString() : null,
+    time_precision: Number.isFinite(start) ? parsed.precision : 'unknown',
     published_at: null, // источник не сообщает время публикации
-    expires_at: validUntil, // сохраняем для существующего механизма автоматического истечения
+    expires_at: phaseEnd != null ? new Date(phaseEnd).toISOString() : null, // конец фазы, если указан в тексте; иначе решает лента
     status: type === 'warning' ? 'LIVE' : 'ACTIVE',
     status_reason: 'listed_in_current_source_feed',
     confidence: hasCoord ? 0.9 : 0.6,
@@ -329,22 +304,11 @@ export async function probe(ctx) {
       const inCity = all.map((raw) => toItem(raw, road, t.path, ctx.now)).filter(Boolean);
       out.types[t.path] = {
         url, total: all.length, in_city: inCity.length,
-        // Проверяем, что начало и конец действия соответствуют строкам источника.
-        city_samples: inCity.slice(0, 3).map((i) => ({
-          title: i.title,
-          event_time: i.event_time,
-          time_precision: i.time_precision,
-          valid_from: i.valid_from,
-          valid_from_precision: i.valid_from_precision,
-          valid_until: i.valid_until,
-          valid_until_precision: i.valid_until_precision,
-          description: (i.description || '').slice(0, 400)
-        })),
+        // что разобрано из текста: проверьте, что event_time и описание соответствуют строкам источника
+        city_samples: inCity.slice(0, 3).map((i) => ({ title: i.title, event_time: i.event_time, time_precision: i.time_precision, description: (i.description || '').slice(0, 400) })),
         raw_sample: text.slice(0, 800)
       };
-    } catch (e) {
-      out.types[t.path] = { url, error: e.message };
-    }
+    } catch (e) { out.types[t.path] = { url, error: e.message }; }
   }
   return out;
 }
