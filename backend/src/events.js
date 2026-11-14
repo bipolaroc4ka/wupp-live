@@ -17,28 +17,13 @@ const UPSERT_SQL =
   `WHERE events.content_hash != excluded.content_hash OR events.status != excluded.status OR events.miss_count > 0`;
 
 // Поля, влияющие на «смысл» записи. Геокод сюда не входит: он добавляется отдельно.
-// Поля, влияющие на содержимое и состояние события.
-async function hashOf(it) {
+// Если источник даёт собственный признак изменения записи (it.content_key, например hash из NINA),
+// хэш строится только из него: так можно не перезагружать подробности, пока запись не изменилась.
+export async function hashOf(it) {
+  if (it.content_key != null) return sha256Hex(JSON.stringify(['key', String(it.content_key)]));
   return sha256Hex(JSON.stringify([
-    it.title,
-    it.description,
-    it.category,
-    it.status,
-    it.status_reason,
-    it.event_time,
-    it.time_precision,
-    it.published_at,
-    it.expires_at,
-    it.latitude,
-    it.longitude,
-    it.geo_precision,
-    it.location_name,
-    it.district,
-    it.publisher,
-    it.source_url,
-    it.severity,
-    it.confidence,
-    it.is_verified
+    it.title, it.description, it.category, it.status, it.event_time, it.published_at,
+    it.expires_at, it.latitude, it.longitude, it.location_name, it.severity
   ]));
 }
 
