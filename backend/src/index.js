@@ -83,11 +83,7 @@ function isAdmin(req, env) {
 // Публичное представление события: без служебных полей.
 // Координаты отдаются только если они обоснованы (источник или улица); район/город — без точки.
 function publicEvent(r, tr) {
-  const hasPoint = (
-  r.geo_precision === 'source' ||
-  r.geo_precision === 'street' ||
-  r.geo_precision === 'area'
-) && r.latitude != null && r.longitude != null;
+  const hasPoint = (r.geo_precision === 'source' || r.geo_precision === 'street') && r.latitude != null && r.longitude != null;
   return {
     id: r.id,
     title: r.title,
