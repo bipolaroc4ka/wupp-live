@@ -67,48 +67,65 @@ function toMs(d, m, y, h = null, mi = 0) {
   return berlinToUtc(year, month, day, h == null ? 0 : Number(h), Number(mi));
 }
 
+const RE_DATE_RANGE = new RegExp(`${D}\\s+bis(?:\\s+zum)?\\s+${D}(?!\\s*(?:um\\s+)?\\d{1,2}:)`, 'g');
+const RE_HEADER = /Zeiträumen gültig:?/i;
+
 /**
- * Начало «текущего» периода по тексту: идущее сейчас окно, иначе «Beginn:», иначе последнее прошедшее окно.
- * Только то, что явно написано в тексте; иначе { ms: null }.
+ * Все окна, явно названные в тексте: «D T bis zum D T», «D von T bis T», «D bis D», отдельные даты в списке
+ * после «…zu folgenden Zeiträumen gültig:». day=true — окно без времени (целые сутки).
+ */
+export function scheduleWindows(text) {
+  const src = String(text || '');
+  const out = [], seen = new Set();
+  const push = (start, end, day = false) => {
+    if (start == null || end == null || end < start) return;
+    const k = `${start}|${end}`;
+    if (!seen.has(k)) { seen.add(k); out.push({ start, end, day }); }
+  };
+  for (const m of src.matchAll(RE_PERIOD)) push(toMs(m[1], m[2], m[3], m[4], m[5]), toMs(m[6], m[7], m[8], m[9], m[10]));
+  for (const m of src.matchAll(RE_DAY_WINDOW)) push(toMs(m[1], m[2], m[3], m[4], m[5]), toMs(m[1], m[2], m[3], m[6], m[7]));
+  for (const m of src.matchAll(RE_DATE_RANGE)) push(toMs(m[1], m[2], m[3], 0, 0), toMs(m[4], m[5], m[6], 23, 59), true);
+  // списки отдельных дат под заголовком
+  let inList = false;
+  for (const raw of src.split('\n')) {
+    const line = raw.trim().replace(/\.$/, '');
+    if (!line) { inList = false; continue; }
+    if (RE_HEADER.test(line)) { inList = true; continue; }
+    const m = inList && new RegExp(`^${D}$`).exec(line);
+    if (m) push(toMs(m[1], m[2], m[3], 0, 0), toMs(m[1], m[2], m[3], 23, 59), true);
+  }
+  return out;
+}
+
+/**
+ * Начало «текущего» периода по тексту: идущее сейчас окно, иначе «Beginn:» в прошлом, иначе последнее прошедшее окно,
+ * иначе ближайшее запланированное. Только то, что явно написано в тексте; иначе { ms: null }.
  */
 export function parseSchedule(text, now) {
-  const windows = [];
-  for (const m of String(text || '').matchAll(RE_PERIOD)) {
-    const start = toMs(m[1], m[2], m[3], m[4], m[5]);
-    const end = toMs(m[6], m[7], m[8], m[9], m[10]);
-    if (start != null && end != null && end >= start) windows.push({ start, end });
-  }
-  for (const m of String(text || '').matchAll(RE_DAY_WINDOW)) {
-    const start = toMs(m[1], m[2], m[3], m[4], m[5]);
-    const end = toMs(m[1], m[2], m[3], m[6], m[7]);
-    if (start != null && end != null && end >= start) windows.push({ start, end });
-  }
+  const windows = scheduleWindows(text);
+  const prec = (w) => (w.day ? 'day' : 'minute');
   const current = windows.find((w) => w.start <= now && now <= w.end);
-  if (current) return { ms: current.start, precision: 'minute' };
+  if (current) return { ms: current.start, precision: prec(current) };
 
   const b = RE_BEGIN.exec(String(text || ''));
-  if (b) {
-    const ms = toMs(b[1], b[2], b[3], b[4] ?? null, b[5] ?? 0);
-    if (ms != null && ms <= now) return { ms, precision: b[4] != null ? 'minute' : 'day' };
-  }
+  const begin = b ? { ms: toMs(b[1], b[2], b[3], b[4] ?? null, b[5] ?? 0), precision: b[4] != null ? 'minute' : 'day' } : null;
+  if (begin && begin.ms != null && begin.ms <= now) return begin;
   const past = windows.filter((w) => w.start <= now).sort((x, y) => y.start - x.start)[0];
-  if (past) return { ms: past.start, precision: 'minute' };
-  // Ничего не идёт и не прошло: ближайшее запланированное начало, прямо названное в тексте («16.11.26 von 09:00 bis 15:00»)
+  if (past) return { ms: past.start, precision: prec(past) };
   const next = windows.filter((w) => w.start > now).sort((x, y) => x.start - y.start)[0];
-  if (next) return { ms: next.start, precision: 'minute' };
-  if (b) {
-    const ms = toMs(b[1], b[2], b[3], b[4] ?? null, b[5] ?? 0);
-    if (ms != null) return { ms, precision: b[4] != null ? 'minute' : 'day' };
-  }
+  if (next) return { ms: next.start, precision: prec(next) };
+  if (begin && begin.ms != null) return begin;
   return { ms: null, precision: 'unknown' };
 }
 
-/** Конец текущей фазы работ («Zeitraum dieser Bauphase: … Ende: 22.01.27 um 22:00 Uhr»), только если он явно указан. */
-export function parsePhaseEnd(text) {
+/** Конец фазы («Ende: …»), иначе конец последнего окна из списка «Zeiträume». Конец всей меры сюда не входит. */
+export function parseExpiry(text) {
   const m = RE_END.exec(String(text || ''));
-  if (!m) return null;
-  return toMs(m[1], m[2], m[3], m[4] ?? 23, m[5] ?? 59);
+  if (m) return toMs(m[1], m[2], m[3], m[4] ?? 23, m[5] ?? 59);
+  const w = scheduleWindows(text);
+  return w.length ? Math.max(...w.map((x) => x.end)) : null;
 }
+export const parsePhaseEnd = parseExpiry;
 
 // ---------- читаемое описание ----------
 // Источник отдаёт абзацы текстом: «Die Baustelle ist zu folgenden Zeiträumen gültig: …», «Zeitraum dieser Bauphase: …»,
@@ -121,6 +138,7 @@ const rx = (src) => new RegExp(src, 'i');
 const RE_WIN_FULL = rx(`^${D}\\s+(?:um\\s+)?${T}\\s+bis(?:\\s+zum)?\\s+${D}\\s+(?:um\\s+)?${T}(?:\\s+Uhr)?$`);
 const RE_WIN_DAY = rx(`^${D}\\s+von\\s+${T}\\s+bis\\s+${T}(?:\\s+Uhr)?$`);
 const RE_WIN_DATE = rx(`^${D}$`);
+const RE_WIN_RANGE = rx(`^${D}\\s+bis(?:\\s+zum)?\\s+${D}$`);
 const stamp = (d, m, y, h, mi) => (h == null ? ymd(d, m, y) : `${ymd(d, m, y)} ${hm(h, mi)}`);
 const RE_PHASE_LINE = (label) => rx(`^${label}:\\s*${D}(?:\\s+um\\s+${T}(?:\\s+Uhr)?)?$`);
 const RE_TOTAL = rx(`^\\(?Ende der Gesamtmaßnahme:\\s*${D}\\)?\\.?$`);
@@ -133,6 +151,8 @@ function windowOf(line) {
   if (m) return `${stamp(m[1], m[2], m[3], m[4], m[5])} – ${stamp(m[6], m[7], m[8], m[9], m[10])}`;
   m = RE_WIN_DAY.exec(s);
   if (m) return `${ymd(m[1], m[2], m[3])}, ${hm(m[4], m[5])}–${hm(m[6], m[7])}`;
+  m = RE_WIN_RANGE.exec(s);
+  if (m) return `${ymd(m[1], m[2], m[3])} – ${ymd(m[4], m[5], m[6])}`;
   m = RE_WIN_DATE.exec(s);
   if (m) return ymd(m[1], m[2], m[3]);
   return null;
@@ -213,7 +233,7 @@ function toItem(it, road, type, now = Date.now()) {
   const stamped = Date.parse(it.startTimestamp || '');
   const parsed = Number.isFinite(stamped) ? { ms: stamped, precision: 'minute' } : parseSchedule(lines.join('\n'), now);
   const start = parsed.ms ?? NaN;
-  const phaseEnd = parsePhaseEnd(lines.join('\n'));
+  const phaseEnd = parseExpiry(lines.join('\n'));
   if (phaseEnd != null && phaseEnd <= now) return null; // фаза закончилась: не показываем (иначе статус «мигал» бы)
   const category = type === 'roadworks' ? 'roadworks' : type === 'closure' ? 'road_closure' : classifyWarning(text);
 
