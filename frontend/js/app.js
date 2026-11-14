@@ -36,6 +36,7 @@
     { id: 'cronenberg', name: 'Cronenberg', c: [51.2040, 7.1330], r: 2300, keys: ['cronenberg'] },
     { id: 'vohwinkel', name: 'Vohwinkel', c: [51.2330, 7.0590], r: 2300, keys: ['vohwinkel'] }
   ];
+  const END_DATE_SOURCES = new Set(['nina', 'mobidrom', 'autobahn']);
   const SEVERITIES = new Set(['Minor', 'Moderate', 'Severe', 'Extreme']); // степени опасности CAP (NINA)
   const HOURS_OPTIONS =[3, 12, 24, 72, 168];
   const DEFAULT_HOURS = 24;
@@ -540,7 +541,8 @@
         lagMs != null && lagMs > 60000 ? el('span', { class: 'tl-lag', text: t('lagPub', { d: fmtDur(lagMs) }) }) : null));
     } else rows.push(tlRow(t('tPublished'), t('tPubUnknown'), true));
 
-    if (ev.expires_at) rows.push(tlRow(t('tExpires'), withRel(ev.expires_at)));
+    // «Действует до» только там, где это настоящая дата окончания; у пресс-релизов срок хранения — не срок действия
+    if (ev.expires_at && END_DATE_SOURCES.has(ev.source)) rows.push(tlRow(t('tExpires'), withRel(ev.expires_at)));
     rows.push(tlRow(t('tReceived'), withRel(ev.received_at)));
     if (Math.abs(Date.parse(ev.updated_at) - Date.parse(ev.received_at)) > 60000) rows.push(tlRow(t('tUpdated'), withRel(ev.updated_at)));
     $('#dTimes').replaceChildren(...rows);
