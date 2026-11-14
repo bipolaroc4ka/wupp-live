@@ -53,6 +53,8 @@ const T = String.raw`(\d{1,2}):(\d{2})`;
 const RE_PERIOD = new RegExp(`${D}\\s+(?:um\\s+)?${T}\\s+bis(?:\\s+zum)?\\s+${D}\\s+(?:um\\s+)?${T}`, 'g');
 const RE_BEGIN = new RegExp(`Beginn:\\s*${D}(?:\\s+um\\s+${T})?`, 'i');
 
+const RE_DAY_WINDOW = new RegExp(`${D}\\s+von\\s+${T}\\s+bis\\s+${T}`, 'g');
+
 function toMs(d, m, y, h = null, mi = 0) {
   let year = Number(y);
   if (year < 100) year += 2000;
@@ -75,6 +77,11 @@ export function parseSchedule(text, now) {
     const end = toMs(m[6], m[7], m[8], m[9], m[10]);
     if (start != null && end != null && end >= start) windows.push({ start, end });
   }
+  for (const m of String(text || '').matchAll(RE_DAY_WINDOW)) {
+    const start = toMs(m[1], m[2], m[3], m[4], m[5]);
+    const end = toMs(m[1], m[2], m[3], m[6], m[7]);
+    if (start != null && end != null && end >= start) windows.push({ start, end });
+  }
   const current = windows.find((w) => w.start <= now && now <= w.end);
   if (current) return { ms: current.start, precision: 'minute' };
 
@@ -86,6 +93,82 @@ export function parseSchedule(text, now) {
   const past = windows.filter((w) => w.start <= now).sort((x, y) => y.start - x.start)[0];
   if (past) return { ms: past.start, precision: 'minute' };
   return { ms: null, precision: 'unknown' };
+}
+
+// ---------- читаемое описание ----------
+// Источник отдаёт абзацы текстом: «Die Baustelle ist zu folgenden Zeiträumen gültig: …», «Zeitraum dieser Bauphase: …»,
+// «A1: Dortmund -> Köln, zwischen 0.4 km hinter X und 1.4 km vor Y», «Länge: 1.15 km | Max. 100 km/h | …».
+// Раскладываем по строкам «Подпись: значение» (числа и даты в нейтральном виде, их же переводит structured.js).
+const pad = (n) => String(n).padStart(2, '0');
+const ymd = (d, m, y) => `${pad(d)}.${pad(m)}.${Number(y) < 100 ? 2000 + Number(y) : y}`;
+const hm = (h, m) => `${pad(h)}:${m}`;
+const rx = (src) => new RegExp(src, 'i');
+const RE_WIN_FULL = rx(`^${D}\\s+(?:um\\s+)?${T}\\s+bis(?:\\s+zum)?\\s+${D}\\s+(?:um\\s+)?${T}(?:\\s+Uhr)?$`);
+const RE_WIN_DAY = rx(`^${D}\\s+von\\s+${T}\\s+bis\\s+${T}(?:\\s+Uhr)?$`);
+const RE_WIN_DATE = rx(`^${D}$`);
+const stamp = (d, m, y, h, mi) => (h == null ? ymd(d, m, y) : `${ymd(d, m, y)} ${hm(h, mi)}`);
+const RE_PHASE_LINE = (label) => rx(`^${label}:\\s*${D}(?:\\s+um\\s+${T}(?:\\s+Uhr)?)?$`);
+const RE_TOTAL = rx(`^\\(?Ende der Gesamtmaßnahme:\\s*${D}\\)?\\.?$`);
+const ABBREV = [[/\bErn\./g, 'Erneuerung'], [/\bInst\./g, 'Instandsetzung'], [/\bRtg\./g, 'Richtung']];
+const comma = (v) => v.replace(/(\d+)\.(\d+)(?=\s*(?:km|m)\b)/g, '$1,$2');
+
+function windowOf(line) {
+  const s = line.replace(/\.$/, '').trim();
+  let m = RE_WIN_FULL.exec(s);
+  if (m) return `${stamp(m[1], m[2], m[3], m[4], m[5])} – ${stamp(m[6], m[7], m[8], m[9], m[10])}`;
+  m = RE_WIN_DAY.exec(s);
+  if (m) return `${ymd(m[1], m[2], m[3])}, ${hm(m[4], m[5])}–${hm(m[6], m[7])}`;
+  m = RE_WIN_DATE.exec(s);
+  if (m) return ymd(m[1], m[2], m[3]);
+  return null;
+}
+
+export function formatDescription({ subtitle, lines, route, blocked, projectLabel = 'Maßnahme' }) {
+  const windows = [];
+  const section = [], metrics = [], project = [], other = [];
+  let begin = null, end = null, total = null, mode = null;
+
+  for (const raw of lines) {
+    const line = String(raw || '').trim();
+    if (!line) { mode = null; continue; }
+    if (/^Die Baustelle ist zu folgenden Zeiträumen gültig:?$/i.test(line)) { mode = 'windows'; continue; }
+    if (/^Zeitraum dieser Bauphase:?$/i.test(line)) { mode = 'phase'; continue; }
+    let m;
+    if (mode === 'windows') { const w = windowOf(line); if (w) { windows.push(w); continue; } mode = null; }
+    if (mode === 'phase') {
+      if ((m = RE_PHASE_LINE('Beginn').exec(line))) { begin = stamp(m[1], m[2], m[3], m[4], m[5]); continue; }
+      if ((m = RE_PHASE_LINE('Ende').exec(line))) { end = stamp(m[1], m[2], m[3], m[4], m[5]); continue; }
+      mode = null;
+    }
+    if ((m = RE_TOTAL.exec(line))) { total = ymd(m[1], m[2], m[3]); continue; }
+    if (/(?:^|\|\s*)(?:Länge:|Max\.|Maximale Durchfahrtsbreite:)/.test(line)) { metrics.push(...line.split('|').map((x) => x.trim()).filter(Boolean)); continue; }
+    if (/^[AB]\d+\s*:/.test(line) || /\bzwischen\b.+\bund\b/.test(line) || /^(?:Auffahrt|Abfahrt|Ausfahrt|Einfahrt)\b/.test(line)) { section.push(comma(line).replace(/\s*->\s*/g, ' → ')); continue; }
+    project.push(ABBREV.reduce((t, [re, to]) => t.replace(re, to), line));
+  }
+
+  const out = [];
+  const add = (label, value) => { if (value) out.push(`${label}: ${value}`); };
+  // subtitle: либо направление («Köln -> Dortmund»), либо описание места («AS Wuppertal-Barmen (aus Richtung …)»)
+  const sub = String(subtitle || '').trim();
+  if (/->/.test(sub)) add('Richtung', sub.replace(/\s*->\s*/g, ' → '));
+  else if (sub && !section.some((x) => x.includes(sub)) && !project.some((x) => x === sub)) add('Lage', sub);
+  for (let i = project.length - 1; i >= 0; i--) if (section.some((x) => x.includes(project[i]))) project.splice(i, 1); // дубль строки участка
+  add('Zeiträume', windows.join('; '));
+  add('Bauphase', begin && end ? `${begin} – ${end}` : begin ? `seit ${begin}` : end ? `bis ${end}` : '');
+  add('Gesamtmaßnahme bis', total);
+  add('Abschnitt', section.join('; '));
+  for (const item of metrics) {
+    let m;
+    if ((m = /^Länge:\s*(.+)$/.exec(item))) { if (!/nicht ermittelt/i.test(m[1])) add('Länge', comma(m[1])); }
+    else if ((m = /^Max\.?\s*(\d+)\s*km\/h/.exec(item))) add('Tempolimit', `${m[1]} km/h`);
+    else if ((m = /^Maximale Durchfahrtsbreite:\s*(.+)$/.exec(item))) add('Max. Durchfahrtsbreite', comma(m[1]));
+    else other.push(item);
+  }
+  add(projectLabel, project.join('; '));
+  if (blocked) other.push('Vollsperrung');
+  add('Hinweis', other.join('; '));
+  add('Umleitung', String(route || '').replace(/^Umleitung\s*:?\s*/i, ''));
+  return out.map((l) => l.replace(/\s+$/, '')).join('\n') || null;
 }
 
 function classifyWarning(text) {
@@ -104,12 +187,13 @@ function toItem(it, road, type, now = Date.now()) {
   if (it.identifier == null) return null;
 
   const lines = Array.isArray(it.description) ? it.description : (it.description ? [it.description] : []);
-  const descParts = [it.subtitle, ...lines].filter(Boolean).map((s) => String(s).trim()).filter(Boolean);
-  if (type === 'roadworks' && (it.isBlocked === true || it.isBlocked === 'true')) descParts.push('Vollsperrung');
   const route = (Array.isArray(it.routeRecommendation) ? it.routeRecommendation : [])
-    .map((x) => String(x || '').trim()).filter(Boolean);
-  if (route.length) descParts.push(`Umleitung: ${route.join(' ')}`);
-  const text = `${it.title || ''} ${descParts.join(' ')}`;
+    .map((x) => String(x || '').trim()).filter(Boolean).join(' ');
+  const blocked = type === 'roadworks' && (it.isBlocked === true || it.isBlocked === 'true');
+  const description = formatDescription({
+    subtitle: it.subtitle, lines, route, blocked, projectLabel: type === 'warning' ? 'Meldung' : 'Maßnahme'
+  });
+  const text = `${it.title || ''} ${it.subtitle || ''} ${lines.join(' ')} ${route}`;
 
   const stamped = Date.parse(it.startTimestamp || '');
   const parsed = Number.isFinite(stamped) ? { ms: stamped, precision: 'minute' } : parseSchedule(lines.join('\n'), now);
@@ -121,7 +205,7 @@ function toItem(it, road, type, now = Date.now()) {
     scope: `${road}/${type}`,
     publisher: 'Die Autobahn GmbH des Bundes',
     title: String(it.title || `${road}`).trim(),
-    description: descParts.join(' · ') || null,
+    description,
     category,
     source_url: 'https://www.autobahn.de/',
     latitude: hasCoord ? lat : null,
