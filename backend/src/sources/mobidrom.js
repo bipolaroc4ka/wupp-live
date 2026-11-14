@@ -3,6 +3,7 @@ import { inCityBbox } from '../config.js';
 import { fetchWithRetry, ISO, truncate, shortId } from '../util.js';
 import { extractStreet, geocodeStreet } from '../geo.js';
 import { syncSource } from '../events.js';
+import { berlinToUtc, berlinYMD } from '../time.js';
 
 export const meta = {
   id: 'mobidrom',
@@ -280,8 +281,10 @@ function parseRecord(block) {
   const workLocation = chooseWorkLocation(values, location);
   const siteText = workLocation.text || '';
   const outsideCityHint = OUTSIDE_CITY_RE.test(siteText) && !/\bWuppertal\b/i.test(siteText);
-  const descriptionParts = [...values];
-  if (location && !descriptionParts.includes(location)) descriptionParts.push(location);
+  // «über L427, Hauptstraße …», «Richtung …» — это рекомендованный объезд, а не описание работ: выносим отдельно
+  const routes = values.filter(isRouteText);
+  const descriptionParts = values.filter((value) => !isRouteText(value));
+  if (location && !isRouteText(location) && !descriptionParts.includes(location)) descriptionParts.push(location);
   const description = descriptionParts.join(' · ');
 
   const street = workLocation.street || extractStreetName(location || '') ||
@@ -305,6 +308,7 @@ function parseRecord(block) {
     type,
     title: truncate(title || 'Baustelle', 220),
     description: truncate(description, MAX_DESCRIPTION),
+    route: routes.join(' · ') || null,
     road,
     street,
     location: workLocation.text || location,
@@ -361,6 +365,7 @@ function parseSituation(block) {
     recordCount: records.length,
     title: truncate(title, 220),
     description: truncate(descriptions.join(' · '), MAX_DESCRIPTION),
+    route: [...new Set(records.map((r) => r.route).filter(Boolean))].join(' · ') || null,
     road: roads[0] || null,
     street,
     location: locations[0] || null,
@@ -379,6 +384,15 @@ function parseSituation(block) {
     cityCoordinateCount: allPoints.length,
     recordTypes: records.map((r) => r.type)
   };
+}
+
+const dateFmt = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' });
+const fmtDate = (ms) => dateFmt.format(new Date(ms));
+
+// Источник отдаёт даты как локальную полночь (00:00 / 23:59 по Берлину): это «день», а не «минута»
+function isLocalMidnight(ms) {
+  const { y, m, d } = berlinYMD(ms);
+  return ms === berlinToUtc(y, m, d, 0, 0);
 }
 
 function classify(text) {
@@ -431,10 +445,11 @@ async function makeEvent(ctx, situation) {
   if (situation.end && situation.end < ctx.now) return null;
   if (situation.start && situation.start > ctx.now + MAX_FUTURE_DAYS * DAY) return null;
 
-  // Срок: конец работ + 2 дня. Если конца нет, срока нет: запись закрывается, когда исчезает из полной ленты
+  // Срок: конец работ (в интерфейсе показывается как «Действует до»; завершённые не сохраняем, чтобы статус не «мигал»).
+  // Если конца нет, срока нет: запись закрывается, когда исчезает из полной ленты
   // (resolveMissing). Раньше срок считался от «сейчас» и сдвигался при каждом запуске: менялся хэш записи,
   // а событие никогда не истекало.
-  const expiresAt = situation.end ? situation.end + 2 * DAY : null;
+  const expiresAt = situation.end || null;
 
   const stableId = situation.id || [
     situation.title,
@@ -443,7 +458,12 @@ async function makeEvent(ctx, situation) {
   ].join('|');
 
   const isScheduled = situation.start && situation.start > ctx.now;
+  const period = situation.start && situation.end
+    ? `${fmtDate(situation.start)} – ${fmtDate(situation.end)}`
+    : situation.start ? `seit ${fmtDate(situation.start)}` : situation.end ? `bis ${fmtDate(situation.end)}` : null;
   const extras = [
+    period ? `Bauzeit: ${period}` : null,
+    situation.route ? `Umleitung: ${truncate(situation.route, 400)}` : null,
     situation.workTypes.length ? `Art der Arbeiten: ${situation.workTypes.join(', ')}` : null,
     situation.lanes ? `Fahrstreifen: ${situation.lanes}` : null,
     situation.window ? `Zeitfenster: ${situation.window}` : null
@@ -465,7 +485,7 @@ async function makeEvent(ctx, situation) {
     location_name: situation.street || situation.road || situation.location || situation.title,
     district,
     event_time: situation.start ? ISO(situation.start) : null,
-    time_precision: situation.start ? 'minute' : 'unknown',
+    time_precision: !situation.start ? 'unknown' : isLocalMidnight(situation.start) ? 'day' : 'minute',
     published_at: null,
     expires_at: expiresAt ? ISO(expiresAt) : null,
     status: 'ACTIVE',
