@@ -1,47 +1,44 @@
+// NINA / Bundesamt für Bevölkerungsschutz — официальные предупреждения (MOWAS, DWD, KATWARN, BIWAPP, LHP, Polizei).
+//
+// Как работает (форма mapData подтверждена реальным ответом API, форма CAP-подробностей и GeoJSON — по документации
+// bundesAPI/nina-api, поэтому разбор защитный: чего нет в ответе, того нет и у нас, ничего не выдумывается):
+//   1) 6 лент  GET /api31/{mowas|dwd|katwarn|biwapp|lhp|police}/mapData.json — ВСЕ активные предупреждения Германии
+//      (id, version, startDate, expiresDate, severity, urgency, type, i18nTitle);
+//   2) для новых/изменившихся (id+version) предупреждений: GET /api31/warnings/{id}.json (CAP: описание,
+//      рекомендации, зоны, onset/expires) и GET /api31/warnings/{id}.geojson (контур зоны);
+//   3) география по контуру: затрагивает Вупперталь -> 'city'; иначе затрагивает NRW -> 'region' (или 'national',
+//      если сказано «bundesweit»); иначе предупреждение пропускается и запоминается в таблице nina_skip.
+//
+// Честность данных:
+//   • точка на карте ставится только для компактной зоны (≤ ~2 км) внутри города (geo_precision 'source');
+//   • для больших зон (район/округ/NRW/вся страна) координат нет: показываем, что оно относится к области,
+//     и перечисляем названия территорий; «представительской» точки в центре города не рисуем — это выглядело бы
+//     как происшествие в центре Вупперталя.
+//
+// Лимит Workers Free — 50 подзапросов за запуск: 6 лент + не более MAX_WARNINGS×2. Остальное — в следующий запуск.
+// Нужна миграция migrations/003_nina_skip.sql (кэш проверенных чужих предупреждений); без неё источник работает,
+// но будет перепроверять чужие предупреждения заново.
+//
+// Настройки (необязательные): NINA_SCOPE = 'city' | 'nrw' (по умолчанию) — показывать ли предупреждения NRW и всей
+// страны, затрагивающие NRW, или только затрагивающие Вупперталь.
 
 import { CITY } from '../config.js';
-import { fetchJson } from '../util.js';
-import { syncSource } from '../events.js';
+import { fetchJson, shortId, truncate as truncateText } from '../util.js';
+import { syncSource, hashOf } from '../events.js';
 
 const BASE_URL = 'https://warnung.bund.de/api31';
-
-const FEEDS = [
-  'mowas',
-  'dwd',
-  'katwarn',
-  'biwapp',
-  'lhp',
-  'police'
-];
-
-// Координаты GeoJSON: [longitude, latitude].
-// Границы Вупперталя — приближённый городской прямоугольник.
-const CITY_BBOX = {
-  west: 7.01,
-  east: 7.32,
-  south: 51.16,
-  north: 51.33
-};
-
-// Приближённая область Nordrhein-Westfalen.
-// Используется как географический фильтр-кандидат, а не как
-// точная административная граница федеральной земли.
-const NRW_BBOX = {
-  west: 5.86,
-  east: 9.46,
-  south: 50.32,
-  north: 52.53
-};
-
-// Координаты Вупперталя — представительская точка
-// для региональных предупреждений на городской карте.
-const CITY_CENTER = {
-  longitude: 7.197,
-  latitude: 51.256
-};
-
+const FEEDS = ['mowas', 'dwd', 'katwarn', 'biwapp', 'lhp', 'police'];
+const SCHEMA = 'v3';             // менять при изменении состава сохраняемых данных: всё подгрузится заново
+const MAX_WARNINGS = 18;         // 18 × 2 запроса + 6 лент = 42 < 50
 const CONCURRENCY = 5;
-const MAX_DESCRIPTION = 12000;
+const SKIP_KEEP_DAYS = 14;
+
+// Координаты GeoJSON: [longitude, latitude]. Города берём из config.js, чтобы границы были в одном месте.
+const CITY_BBOX = { west: CITY.bbox.minLon, east: CITY.bbox.maxLon, south: CITY.bbox.minLat, north: CITY.bbox.maxLat };
+// Приблизительная область Nordrhein-Westfalen: фильтр-кандидат, а не административная граница.
+const NRW_BBOX = { west: 5.86, east: 9.46, south: 50.32, north: 52.53 };
+// Зона не крупнее этого (≈ 2,2 км) считается «местом», крупнее — областью.
+const MAX_LOCAL_SPAN = { lat: 0.02, lon: 0.032 };
 
 export const meta = {
   id: 'nina',
@@ -51,145 +48,82 @@ export const meta = {
   group: 'warning'
 };
 
+// Коды земель в id MOWAS («mow.DE-SL-…»): предупреждение выпускает орган своей земли, поэтому
+// предупреждения других земель не запрашиваем (экономия подзапросов). NW, BV (федерация) и неизвестное — проверяем.
+const OTHER_STATES = new Set(['BW', 'BY', 'BE', 'BB', 'HB', 'HH', 'HE', 'MV', 'NI', 'RP', 'SL', 'SN', 'ST', 'SH', 'TH']);
+const SEVERITIES = new Set(['Minor', 'Moderate', 'Severe', 'Extreme']);
+
 // --------------------------------------------------
-// Общие функции
+// Текст
 // --------------------------------------------------
 
-function cleanText(value) {
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', auml: 'ä', Auml: 'Ä', ouml: 'ö', Ouml: 'Ö', uuml: 'ü', Uuml: 'Ü', szlig: 'ß' };
+
+export function cleanText(value) {
   if (value == null) return '';
-
   return String(value)
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p\s*>/gi, '\n\n')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*(p|div|li|ul|ol|h\d)\s*>/gi, '\n')
+    .replace(/<\s*li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#(\d{1,6});/g, (_, n) => { const c = Number(n); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
+    .replace(/&([a-zA-Z]+);/g, (m, n) => (n in ENTITIES ? ENTITIES[n] : m))
     .replace(/\r/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t ]+/g, ' ')
+    .replace(/ *\n */g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 
-function truncate(value, max = MAX_DESCRIPTION) {
-  const text = cleanText(value);
-
-  if (text.length <= max) return text;
-
-  return `${text.slice(0, max - 1).trimEnd()}…`;
+// В source_url не должно попасть ничего, кроме веб-адреса.
+export function safeWeb(u) {
+  try {
+    const x = new URL(String(u || '').trim());
+    return x.protocol === 'https:' || x.protocol === 'http:' ? x.href : null;
+  } catch { return null; }
 }
 
 function firstText(...values) {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-
+  for (const v of values) if (typeof v === 'string' && v.trim()) return v.trim();
   return null;
 }
 
 function parseDate(value) {
   if (!value) return null;
-
-  const date = new Date(value);
-
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toISOString();
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 function getGermanInfo(detail) {
-  const infos = Array.isArray(detail?.info)
-    ? detail.info
-    : [];
-
-  return (
-    infos.find(
-      (item) => String(item?.language || '').toLowerCase() === 'de'
-    ) ||
-    infos.find(
-      (item) => String(item?.language || '').toLowerCase() === 'de-ls'
-    ) ||
-    infos[0] ||
-    {}
-  );
-}
-
-function getParameter(info, name) {
-  const parameters = Array.isArray(info?.parameter)
-    ? info.parameter
-    : [];
-
-  const item = parameters.find(
-    (parameter) => parameter?.valueName === name
-  );
-
-  return item?.value ?? null;
+  const infos = Array.isArray(detail && detail.info) ? detail.info : detail && detail.info ? [detail.info] : [];
+  const lang = (i) => String((i && i.language) || '').toLowerCase();
+  return infos.find((i) => lang(i) === 'de') || infos.find((i) => lang(i).startsWith('de')) || infos[0] || null;
 }
 
 // --------------------------------------------------
-// Получение записей из mapData
+// Ленты mapData
 // --------------------------------------------------
 
 function extractArray(value, depth = 0) {
   if (Array.isArray(value)) return value;
-
-  if (!value || typeof value !== 'object' || depth > 4) {
-    return null;
-  }
-
-  const preferredKeys = [
-    'warnings',
-    'items',
-    'data',
-    'features',
-    'results'
-  ];
-
-  for (const key of preferredKeys) {
-    if (Array.isArray(value[key])) {
-      return value[key];
-    }
-  }
-
+  if (!value || typeof value !== 'object' || depth > 4) return null;
+  for (const key of ['warnings', 'items', 'data', 'features', 'results']) if (Array.isArray(value[key])) return value[key];
+  for (const child of Object.values(value)) if (Array.isArray(child)) return child;
   for (const child of Object.values(value)) {
-    if (Array.isArray(child)) {
-      return child;
-    }
+    if (child && typeof child === 'object') { const r = extractArray(child, depth + 1); if (r) return r; }
   }
-
-  for (const child of Object.values(value)) {
-    if (child && typeof child === 'object') {
-      const result = extractArray(child, depth + 1);
-
-      if (result) return result;
-    }
-  }
-
   return null;
 }
 
-function normalizeFeedItem(item) {
+function normalizeFeedItem(item, feed) {
   if (!item || typeof item !== 'object') return null;
-
   const id = firstText(item.id, item.identifier);
-
   if (!id) return null;
-
-  return {
-    ...item,
-    id
-  };
+  return { ...item, id, feed };
 }
 
 // --------------------------------------------------
-// География
+// Геометрия (GeoJSON, координаты [lon, lat])
 // --------------------------------------------------
 
 function isValidPoint(point) {
@@ -510,655 +444,341 @@ function getGeoJsonGeometries(geojson) {
   return geojson?.type ? [geojson] : [];
 }
 
-function getGeometryCenter(geojson) {
-  const points = getGeoJsonGeometries(geojson)
-    .flatMap((geometry) =>
-      collectPoints(geometry.coordinates)
-    );
-
-  const bounds = bboxOfPoints(points);
-
-  if (!bounds) return null;
-
-  return {
-    longitude: (bounds.west + bounds.east) / 2,
-    latitude: (bounds.south + bounds.north) / 2
-  };
-}
-
-function getGeoJsonDiagnostics(geojson) {
-  const geometries = getGeoJsonGeometries(geojson);
-
-  const points = geometries.flatMap((geometry) =>
-    collectPoints(geometry.coordinates)
-  );
-
-  return {
-    type: geojson?.type || null,
-    geometryTypes: geometries.map((geometry) => geometry.type),
-    points: points.length,
-    bounds: bboxOfPoints(points)
-  };
-}// --------------------------------------------------
-// Определение географической релевантности
+// --------------------------------------------------
+// География: к какой территории относится предупреждение
 // --------------------------------------------------
 
 function getAreaNames(info) {
-  const areas = Array.isArray(info?.area)
-    ? info.area
-    : [];
-
-  return [
-    ...new Set(
-      areas
-        .map((area) => cleanText(area?.areaDesc))
-        .filter(Boolean)
-    )
-  ];
+  const areas = Array.isArray(info && info.area) ? info.area : info && info.area ? [info.area] : [];
+  return [...new Set(areas.map((a) => cleanText(a && a.areaDesc)).filter(Boolean))];
 }
 
 function isNationalWarning(areaNames, title, description) {
-  const value = [
-    ...areaNames,
-    title || '',
-    description || ''
-  ].join(' ').toLowerCase();
-
-  return /bundesweit|bundesgebiet|ganz deutschland|deutschlandweit|gesamte bundesrepublik|in ganz deutschland/.test(value);
+  const value = [...areaNames, title || '', description || ''].join(' ').toLowerCase();
+  return /bundesweit|bundesgebiet|ganz deutschland|deutschlandweit|gesamte bundesrepublik/.test(value);
 }
 
-function getGeographicScope(geojson, areaNames, title, description) {
-  // Наивысший приоритет — непосредственно Вупперталь.
-  if (geoJsonIntersectsBbox(geojson, CITY_BBOX)) {
-    return 'city';
-  }
-
-  // Национальное предупреждение принимается только при условии,
-  // что его геометрия также затрагивает территорию NRW.
-  const intersectsNRW = geoJsonIntersectsBbox(
-    geojson,
-    NRW_BBOX
-  );
-
-  if (!intersectsNRW) {
-    return null;
-  }
-
-  if (isNationalWarning(areaNames, title, description)) {
-    return 'national';
-  }
-
-  return 'region';
+// 'city' — зона затрагивает Вупперталь; 'region'/'national' — затрагивает NRW (только в режиме nrw); иначе null.
+export function getGeographicScope(geojson, areaNames, title, description, mode = 'nrw') {
+  if (geoJsonIntersectsBbox(geojson, CITY_BBOX)) return 'city';
+  if (mode === 'city') return null;
+  if (!geoJsonIntersectsBbox(geojson, NRW_BBOX)) return null;
+  return isNationalWarning(areaNames, title, description) ? 'national' : 'region';
 }
 
-function getEventCoordinates(geojson, scope) {
-  // Для региональных и национальных предупреждений используем
-  // точку Вупперталя как представительскую точку на городской карте.
-  if (scope !== 'city') {
-    return {
-      latitude: CITY_CENTER.latitude,
-      longitude: CITY_CENTER.longitude
-    };
+function geoBounds(geojson) {
+  const points = getGeoJsonGeometries(geojson).flatMap((g) => collectPoints(g.coordinates));
+  return bboxOfPoints(points);
+}
+
+// --------------------------------------------------
+// Категории (только значения из CATEGORIES в config.js)
+// --------------------------------------------------
+
+const RULES = [
+  ['evacuation', /bombe|blindgänger|blindgaenger|kampfmittel|entschärf|entschaerf|evakuier|\bräumung|\braeumung/],
+  ['flood', /hochwasser|überflutung|ueberflutung|überschwemm|ueberschwemm|pegel/],
+  ['heavy_rain', /starkregen|dauerregen/],
+  ['weather_thunder', /gewitter|blitz|hagel/],
+  ['weather_storm', /sturm|orkan|böe|boee|tornado|\bwind\b/],
+  ['weather_ice', /glätte|glaette|glatteis|schnee|frost|eisregen|tauwetter/],
+  ['weather_heat', /hitze|\buv\b|extreme wärme/],
+  ['infra_power', /stromausfall|stromversorgung|blackout/],
+  ['infra_water', /trinkwasser|wasserversorgung|wasserausfall|abkochen|rohrbruch/],
+  ['fire', /brand(?!enburg)|feuer|rauch|explosion|löscharbeiten/],
+  ['hazard', /gefahrstoff|chemi|gasaustritt|gasleck|gasgeruch|schadstoff|giftig|ammoniak|chlor|radioaktiv|\bgas\b/],
+  ['road_closure', /sperrung|gesperrt/],
+  ['police', /vermisst|fahndung|polizei|bedroh|amok|geisel|messer/]
+];
+
+export function classify(text, feed, capCategory) {
+  const t = String(text || '').toLowerCase();
+  const provider = String(feed || '').toUpperCase();
+  for (const [cat, re] of RULES) {
+    // Метео-категории — только для DWD: слово «Sturm» в сообщении другого провайдера не делает его метеопредупреждением
+    if (cat.startsWith('weather_') && provider !== 'DWD') continue;
+    if (re.test(t)) return cat;
   }
+  if (provider === 'DWD') return 'weather_other';
+  if (provider === 'POLICE') return 'police';
+  const cap = (Array.isArray(capCategory) ? capCategory.join(' ') : String(capCategory || '')).toLowerCase();
+  if (/\bfire\b/.test(cap)) return 'fire';
+  if (/\btransport\b/.test(cap)) return 'traffic_other';
+  return 'warning_other';
+}
 
-  const center = getGeometryCenter(geojson);
+// --------------------------------------------------
+// Сборка записи
+// --------------------------------------------------
 
-  if (
-    center &&
-    pointInsideBbox(
-      [center.longitude, center.latitude],
-      CITY_BBOX
-    )
-  ) {
-    return {
-      latitude: center.latitude,
-      longitude: center.longitude
-    };
+function buildDescription(info, areaNames, extra) {
+  const parts = [];
+  const description = cleanText(info.description);
+  const instruction = cleanText(info.instruction);
+  if (description) parts.push(truncateText(description, 1000));
+  if (instruction && instruction !== description) parts.push(`Handlungsempfehlung: ${truncateText(instruction, 600)}`);
+  if (areaNames.length) {
+    parts.push(`Betroffenes Gebiet: ${truncateText(areaNames.slice(0, 8).join('; ') + (areaNames.length > 8 ? ' …' : ''), 300)}`);
   }
+  if (extra) parts.push(extra);
+  const contact = cleanText(info.contact);
+  if (contact) parts.push(`Kontakt: ${truncateText(contact, 200)}`);
+  return parts.length ? parts.join('\n\n') : null;
+}
 
-  // Если центр большой геометрии находится за пределами города,
-  // не размещаем локальное предупреждение в случайном месте.
+function sizeLabel(b) {
+  const r50 = (m) => Math.max(50, Math.round(m / 50) * 50);
+  const lat = (b.north + b.south) / 2;
+  return `${r50((b.east - b.west) * 111320 * Math.cos((lat * Math.PI) / 180))} × ${r50((b.north - b.south) * 111320)} m`;
+}
+
+const keyOf = (raw) => `${SCHEMA}|${raw.id}|${raw.version ?? ''}`;
+
+// Минимальная запись из mapData: только чтобы не терять предупреждение, детали уже сохранены в базе.
+function minimalItem(raw) {
+  const title = cleanText(firstText(raw.i18nTitle && raw.i18nTitle.de, 'Amtliche Warnung'));
   return {
-    latitude: CITY_CENTER.latitude,
-    longitude: CITY_CENTER.longitude
+    source_event_id: raw.id, content_key: keyOf(raw), title, category: classify(title, raw.feed),
+    status: 'ACTIVE', geo_precision: 'none', is_verified: 1
   };
 }
 
-// --------------------------------------------------
-// Категории
-// --------------------------------------------------
+export function buildItem(raw, detail, geojson, scope, now) {
+  if (!raw || !raw.id) return null;
+  if (String((detail && detail.msgType) || raw.type || '').toLowerCase() === 'cancel') return null;
+  if (detail && detail.status && String(detail.status).toLowerCase() !== 'actual') return null; // Test/Exercise и т.п.
 
-function classify(text, provider, capCategory) {
-  const value = `${text || ''} ${provider || ''} ${capCategory || ''}`
-    .toLowerCase();
+  const info = getGermanInfo(detail) || {};
+  const expiresAt = parseDate(firstText(info.expires, raw.expiresDate));
+  if (expiresAt && Date.parse(expiresAt) <= now) return null;
 
-  if (
-    /dwd|wetter|gewitter|sturm|orkan|regen|schnee|glätte|frost|hitze|unwetter/.test(value)
-  ) {
-    return 'weather';
-  }
-
-  if (
-    /trinkwasser|wasser|gesundheit|seuche|bakteri|virus|infektion|rauchgas/.test(value)
-  ) {
-    return 'health';
-  }
-
-  if (
-    /brand|feuer|rauch|explosion|gasgeruch|gasleck/.test(value)
-  ) {
-    return 'fire';
-  }
-
-  if (
-    /polizei|fahndung|bombenfund|kampfmittel|evakuierung|sperrung|gefahrstoff/.test(value)
-  ) {
-    return 'traffic';
-  }
-
-  return 'other';
-}
-
-// --------------------------------------------------
-// CAP: подробности предупреждения
-// --------------------------------------------------
-
-function buildDescription(info, areaNames) {
-  const sections = [];
-
-  const description = cleanText(info?.description);
-  const instruction = cleanText(info?.instruction);
-
-  if (description) {
-    sections.push(description);
-  }
-
-  if (instruction && instruction !== description) {
-    sections.push(`Рекомендации:\n${instruction}`);
-  }
-
-  if (areaNames.length) {
-    sections.push(
-      `Затронутая территория:\n${areaNames.join('; ')}`
-    );
-  }
-
-  const contact = cleanText(info?.contact);
-
-  if (contact) {
-    sections.push(`Контакт:\n${contact}`);
-  }
-
-  const website = firstText(info?.web);
-
-  if (website) {
-    sections.push(`Дополнительная информация: ${website}`);
-  }
-
-  return truncate(
-    sections.join('\n\n') ||
-    firstText(
-      info?.headline,
-      info?.event,
-      'Официальное предупреждение'
-    )
-  );
-}
-
-function buildItem(raw, detail, geojson) {
-  if (!raw?.id || !detail || !geojson) return null;
-
-  const msgType = String(detail.msgType || raw.type || '')
-    .toLowerCase();
-
-  // Отменённые предупреждения не создаём как активные.
-  if (msgType === 'cancel') return null;
-
-  if (
-    detail.status &&
-    String(detail.status).toLowerCase() !== 'actual'
-  ) {
-    return null;
-  }
-
-  const info = getGermanInfo(detail);
-
-  const title = firstText(
-    info.headline,
-    raw.i18nTitle?.de,
-    info.event,
-    'Amtliche Warnung'
-  );
-
-  const provider = firstText(
-    getParameter(info, 'sender_langname'),
-    getParameter(info, 'sender_signature'),
-    detail.sender,
-    raw.provider
-  );
-
+  const title = cleanText(firstText(raw.i18nTitle && raw.i18nTitle.de, info.headline, info.event, 'Amtliche Warnung'));
   const areaNames = getAreaNames(info);
-
-  const description = buildDescription(info, areaNames);
-
-  const scope = getGeographicScope(
-    geojson,
-    areaNames,
-    title,
-    description
+  const provider = String(raw.feed || '').toUpperCase();
+  const sender = firstText(
+    ...(Array.isArray(info.parameter) ? info.parameter.filter((p) => p && p.valueName === 'sender_langname').map((p) => p.value) : []),
+    info.senderName
   );
 
-  if (!scope) return null;
+  const b = geoBounds(geojson);
+  const local = scope === 'city' && b && provider !== 'DWD' && provider !== 'LHP'
+    && b.north - b.south <= MAX_LOCAL_SPAN.lat && b.east - b.west <= MAX_LOCAL_SPAN.lon
+    && pointInsideBbox([(b.west + b.east) / 2, (b.south + b.north) / 2], CITY_BBOX);
 
-  const coordinates = getEventCoordinates(
-    geojson,
-    scope
-  );
-
-  const startDate = firstText(
-    info.onset,
-    info.effective,
-    raw.startDate
-  );
-
-  const publishedAt = firstText(
-    detail.sent,
-    raw.sent,
-    raw.startDate
-  );
-
-  const expiresAt = firstText(
-    info.expires,
-    raw.expiresDate
-  );
-
-  const category = classify(
-    `${title} ${description}`,
-    provider,
-    Array.isArray(info.category)
-      ? info.category.join(' ')
-      : info.category
-  );
-
-  const sourceUrl = firstText(
-    info.web,
-    'https://warnung.bund.de/'
-  );
-
-  let locationName;
-
-  if (scope === 'city') {
-    locationName = areaNames.length
-      ? areaNames.join('; ')
-      : CITY.name;
+  let geo = 'none', lat = null, lon = null, location;
+  if (local) {
+    geo = 'source'; lat = (b.north + b.south) / 2; lon = (b.west + b.east) / 2;
+    location = truncateText(areaNames[0] || CITY.name, 80);
+  } else if (scope === 'city') {
+    geo = 'city'; location = CITY.name;
   } else if (scope === 'national') {
-    locationName = areaNames.length
-      ? `Deutschland · ${areaNames.join('; ')}`
-      : 'Deutschland';
+    location = 'Deutschland';
   } else {
-    locationName = areaNames.length
-      ? `Nordrhein-Westfalen · ${areaNames.join('; ')}`
-      : 'Nordrhein-Westfalen';
+    location = truncateText(`Nordrhein-Westfalen${areaNames.length ? ` · ${areaNames.slice(0, 3).join('; ')}` : ''}`, 120);
   }
+
+  const onset = parseDate(firstText(info.onset, info.effective));
+  const severity = [info.severity, raw.severity].find((s) => SEVERITIES.has(s)) || null;
+  const text = [title, cleanText(info.headline), cleanText(info.event)].join(' ');
 
   return {
     source_event_id: raw.id,
-    publisher: provider || 'NINA / BBK',
-    title: truncate(title, 500),
-    description,
-    category,
-    source_url: sourceUrl,
-
-    latitude: coordinates.latitude,
-    longitude: coordinates.longitude,
-
-    // Важно: это географическая область предупреждения,
-    // а не точный адрес или координата источника.
-    geo_precision: 'area',
-    location_name: locationName,
-
-    event_time: parseDate(startDate),
-    time_precision: startDate ? 'minute' : 'unknown',
-    published_at: parseDate(publishedAt),
-
+    content_key: keyOf(raw),
+    publisher: `NINA / ${provider || 'BBK'}${sender ? ` (${truncateText(cleanText(sender), 60)})` : ''}`,
+    title: truncateText(title, 300),
+    description: buildDescription(info, areaNames, local ? `Ungefähre Ausdehnung des Warngebiets: ${sizeLabel(b)}.` : null),
+    category: classify(text, raw.feed, info.category),
+    source_url: safeWeb(info.web) || 'https://warnung.bund.de/',
+    geo_precision: geo,
+    latitude: lat,
+    longitude: lon,
+    location_name: location,
+    event_time: onset,                       // onset/effective из CAP; startDate в mapData — время выпуска версии, не явления
+    time_precision: onset ? 'minute' : 'unknown',
+    published_at: parseDate(firstText(detail && detail.sent, raw.startDate)),
     status: 'ACTIVE',
     status_reason: `nina_${scope}_warning`,
-    confidence: scope === 'city' ? 0.95 : 0.85,
+    confidence: scope === 'city' ? 0.95 : 0.8,
     is_verified: 1,
-
-    severity: firstText(
-      info.severity,
-      raw.severity
-    ),
-
-    expires_at: parseDate(expiresAt)
+    severity,
+    expires_at: expiresAt
   };
 }
 
 // --------------------------------------------------
-// Ограничение параллельных запросов
+// Вспомогательное
 // --------------------------------------------------
 
 async function mapLimit(items, limit, callback) {
   const results = new Array(items.length);
-  let nextIndex = 0;
-
-  async function worker() {
-    while (true) {
-      const index = nextIndex++;
-
-      if (index >= items.length) return;
-
-      try {
-        results[index] = await callback(items[index], index);
-      } catch (error) {
-        results[index] = {
-          error: error?.message || String(error)
-        };
-      }
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try { results[i] = await callback(items[i], i); } catch (e) { results[i] = { error: (e && e.message) || String(e) }; }
     }
-  }
-
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    () => worker()
-  );
-
-  await Promise.all(workers);
-
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
 
-// --------------------------------------------------
-// Загрузка предупреждения
-// --------------------------------------------------
+// Идентификатор попадает в путь запроса: пропускаем только безопасные символы.
+const ID_OK = /^[\w.\-:]{1,200}$/;
 
-async function loadWarning(raw) {
-  const id = encodeURIComponent(raw.id);
-
-  const detailUrl = `${BASE_URL}/warnings/${id}.json`;
-  const geoUrl = `${BASE_URL}/warnings/${id}.geojson`;
-
-  const [detailResult, geoResult] = await Promise.all([
-    fetchJson(detailUrl),
-    fetchJson(geoUrl)
-  ]);
-
-  const detail = detailResult?.json;
-  const geojson = geoResult?.json;
-
-  if (!detail || typeof detail !== 'object') {
-    throw new Error(`Некорректный CAP detail: ${raw.id}`);
-  }
-
-  if (!geojson || typeof geojson !== 'object') {
-    throw new Error(`Некорректный GeoJSON: ${raw.id}`);
-  }
-
-  return {
-    raw,
-    detail,
-    geojson
-  };
+async function loadPrev(env) {
+  const rows = (await env.DB.prepare(
+    'SELECT id, content_hash, status, miss_count FROM events WHERE source = ? AND city_id = ?'
+  ).bind(meta.id, CITY.id).all()).results || [];
+  return new Map(rows.map((r) => [r.id, r]));
 }
 
+async function loadSkip(ctx) {
+  try {
+    const rows = (await ctx.env.DB.prepare('SELECT id, version, reason FROM nina_skip').all()).results || [];
+    return new Map(rows.map((r) => [r.id, r]));
+  } catch (e) {
+    ctx.log(`nina: таблица nina_skip недоступна (примените migrations/003_nina_skip.sql): ${e.message}`);
+    return new Map();
+  }
+}
+
+async function saveSkip(ctx, rows) {
+  const db = ctx.env.DB;
+  const ts = new Date(ctx.now).toISOString();
+  try {
+    for (let i = 0; i < rows.length; i += 40) {
+      await db.batch(rows.slice(i, i + 40).map((r) =>
+        db.prepare('INSERT OR REPLACE INTO nina_skip (id, version, reason, ts) VALUES (?, ?, ?, ?)').bind(r.id, r.version, r.reason, ts)));
+    }
+    await db.prepare('DELETE FROM nina_skip WHERE ts < ?').bind(new Date(ctx.now - SKIP_KEEP_DAYS * 86400e3).toISOString()).run();
+  } catch (e) { ctx.log(`nina: не удалось записать nina_skip: ${e.message}`); }
+}
+
+const isExpired = (w, now) => { const e = parseDate(w.expiresDate); return !!e && Date.parse(e) <= now; };
+const foreignState = (w) => { const m = /^mow\.DE-([A-Z]{2})-/.exec(w.id); return !!m && OTHER_STATES.has(m[1]); };
+const priority = (w) => (/DE-NW/.test(w.id) ? 0 : w.feed === 'dwd' ? 1 : 2);
+
 // --------------------------------------------------
-// Основной запуск
+// Запуск
 // --------------------------------------------------
 
 export async function run(ctx) {
-  const feedResults = await Promise.all(
-    FEEDS.map(async (feed) => {
-      const url = `${BASE_URL}/${feed}/mapData.json`;
+  const mode = ctx.env.NINA_SCOPE === 'city' ? 'city' : 'nrw';
 
-      try {
-        const result = await fetchJson(url);
-        const array = extractArray(result?.json);
+  const feedResults = await Promise.all(FEEDS.map(async (feed) => {
+    const url = `${BASE_URL}/${feed}/mapData.json`;
+    try {
+      const array = extractArray((await fetchJson(url, { retries: 1, timeoutMs: 7000 })).json);
+      if (!array) throw new Error(`Unexpected format of ${feed}/mapData.json`);
+      return { feed, items: array.map((x) => normalizeFeedItem(x, feed)).filter(Boolean), ok: true };
+    } catch (e) {
+      ctx.log(`nina feed ${feed}: ${(e && e.message) || e}`);
+      return { feed, items: [], ok: false };
+    }
+  }));
+  // Если лента не загрузилась, пропавшие предупреждения закрывать нельзя.
+  let complete = feedResults.every((r) => r.ok);
+  if (feedResults.every((r) => !r.ok)) throw new Error('NINA: ни одна лента mapData не загрузилась');
 
-        if (!array) {
-          throw new Error(
-            `Неожиданный формат ${feed}/mapData.json`
-          );
-        }
-
-        return {
-          feed,
-          items: array
-            .map(normalizeFeedItem)
-            .filter(Boolean),
-          ok: true
-        };
-      } catch (error) {
-        console.warn(
-          `[nina] Ошибка загрузки ленты ${feed}:`,
-          error?.message || error
-        );
-
-        return {
-          feed,
-          items: [],
-          ok: false
-        };
-      }
-    })
-  );
-
-  // Полная синхронизация допустима только при успешном
-  // получении всех шести лент и всех предупреждений.
-  let complete = feedResults.every((result) => result.ok);
-
-  // Дедупликация по идентификатору.
-  const warningsById = new Map();
-
-  for (const feed of feedResults) {
-    for (const item of feed.items) {
-      const existing = warningsById.get(item.id);
-
-      if (!existing) {
-        warningsById.set(item.id, item);
-        continue;
-      }
-
-      if (
-        Number(item.version || 0) >
-        Number(existing.version || 0)
-      ) {
-        warningsById.set(item.id, item);
-      }
+  const byId = new Map();
+  for (const f of feedResults) {
+    for (const it of f.items) {
+      const ex = byId.get(it.id);
+      if (!ex || Number(it.version || 0) > Number(ex.version || 0)) byId.set(it.id, it);
     }
   }
+  const all = [...byId.values()];
+  const candidates = all.filter((w) => String(w.type || '').toLowerCase() !== 'cancel' && !isExpired(w, ctx.now) && !foreignState(w) && ID_OK.test(w.id));
 
-  const warnings = [...warningsById.values()];
-
-  console.log(
-    `[nina] Ленты: ${feedResults.map(
-      (result) => `${result.feed}=${result.items.length}`
-    ).join(', ')}; уникальных предупреждений: ${warnings.length}`
-  );
-
-  const loaded = await mapLimit(
-    warnings,
-    CONCURRENCY,
-    loadWarning
-  );
-
+  const prev = await loadPrev(ctx.env);
+  const skip = await loadSkip(ctx);
   const items = [];
+  const queue = [];
+  let skipped = 0;
 
-  let loadedCount = 0;
-  let failedCount = 0;
-  let outsideNRWCount = 0;
-  let cityCount = 0;
-  let regionCount = 0;
-  let nationalCount = 0;
-  let cancelledCount = 0;
-  let inactiveCount = 0;
-
-  for (const result of loaded) {
-    if (!result || result.error) {
-      failedCount++;
-      complete = false;
-
-      console.warn(
-        '[nina] Не удалось обработать предупреждение:',
-        result?.error || 'Неизвестная ошибка'
-      );
-
-      continue;
-    }
-
-    loadedCount++;
-
-    const { raw, detail, geojson } = result;
-
-    const msgType = String(
-      detail?.msgType || raw.type || ''
-    ).toLowerCase();
-
-    if (msgType === 'cancel') {
-      cancelledCount++;
-      continue;
-    }
-
-    if (
-      detail.status &&
-      String(detail.status).toLowerCase() !== 'actual'
-    ) {
-      inactiveCount++;
-      continue;
-    }
-
-    const info = getGermanInfo(detail);
-    const areaNames = getAreaNames(info);
-
-    const title = firstText(
-      info.headline,
-      raw.i18nTitle?.de,
-      info.event,
-      'Amtliche Warnung'
-    );
-
-    const description = buildDescription(info, areaNames);
-
-    const scope = getGeographicScope(
-      geojson,
-      areaNames,
-      title,
-      description
-    );
-
-    if (!scope) {
-  outsideNRWCount++;
-
-  const geo = getGeoJsonDiagnostics(geojson);
-
-  console.log(
-    '[nina] Географический фильтр:',
-    JSON.stringify({
-      id: raw.id,
-      title,
-      areas: areaNames,
-      geometry: geo,
-      intersectsCity: geoJsonIntersectsBbox(
-        geojson,
-        CITY_BBOX
-      ),
-      intersectsNRW: geoJsonIntersectsBbox(
-        geojson,
-        NRW_BBOX
-      ),
-      cityBbox: CITY_BBOX,
-      nrwBbox: NRW_BBOX
-    })
-  );
-
-  continue;
-}
-
-    const item = buildItem(raw, detail, geojson);
-
-    if (!item) {
-      inactiveCount++;
-      continue;
-    }
-
-    items.push(item);
-
-    if (scope === 'city') {
-      cityCount++;
-    } else if (scope === 'region') {
-      regionCount++;
-    } else if (scope === 'national') {
-      nationalCount++;
-    }
+  for (const w of candidates) {
+    const sk = skip.get(w.id);
+    if (sk && sk.version === Number(w.version || 0) && (sk.reason === 'gone' || sk.reason === `outside:${mode}`)) { skipped++; continue; }
+    const key = `${mode}:${keyOf(w)}`;
+    w.modeKey = key;
+    const p = prev.get(`${meta.id}:${await shortId(w.id)}`);
+    const unchanged = p && p.content_hash === (await hashOf({ content_key: key })) && p.status !== 'RESOLVED' && !p.miss_count;
+    if (unchanged) { if (p.status !== 'EXPIRED') items.push({ ...minimalItem(w), content_key: key }); continue; }
+    queue.push(w);
   }
 
-  // Если хотя бы один запрос завершился ошибкой,
-  // отсутствующие события не должны закрываться.
-  const syncOptions = {
-    resolveMissing: complete,
-    resolvedScopes: null,
-    scope: null
-  };
+  queue.sort((a, b) => priority(a) - priority(b));
+  const batch = queue.slice(0, MAX_WARNINGS);
+  if (queue.length > batch.length) complete = false; // остальные догрузятся в следующие запуски
 
-  console.log(
-    `[nina] Загружено: ${loadedCount}; ` +
-    `ошибок: ${failedCount}; ` +
-    `вне NRW: ${outsideNRWCount}; ` +
-    `отменено: ${cancelledCount}; ` +
-    `неактивно: ${inactiveCount}; ` +
-    `Вупперталь: ${cityCount}; ` +
-    `NRW: ${regionCount}; ` +
-    `Германия: ${nationalCount}; ` +
-    `всего для проекта: ${items.length}; ` +
-    `resolveMissing=${complete}`
-  );
+  const loaded = await mapLimit(batch, CONCURRENCY, async (raw) => {
+    const id = encodeURIComponent(raw.id);
+    const [d, g] = await Promise.all([
+      fetchJson(`${BASE_URL}/warnings/${id}.json`, { retries: 0, timeoutMs: 7000 }),
+      fetchJson(`${BASE_URL}/warnings/${id}.geojson`, { retries: 0, timeoutMs: 7000 })
+    ]);
+    if (!d.json || typeof d.json !== 'object') throw new Error(`Invalid CAP detail: ${raw.id}`);
+    if (!g.json || typeof g.json !== 'object') throw new Error(`Invalid GeoJSON: ${raw.id}`);
+    return { raw, detail: d.json, geojson: g.json };
+  });
 
-  return syncSource(
-    ctx,
-    meta.id,
-    items,
-    syncOptions
-  );
+  const skipRows = [];
+  const stat = { city: 0, region: 0, national: 0, outside: 0, dropped: 0, failed: 0 };
+  loaded.forEach((r, i) => {
+    const raw = batch[i];
+    const version = Number(raw.version || 0);
+    if (!r || r.error) {
+      stat.failed++;
+      ctx.log(`nina ${raw.id}: ${r && r.error}`);
+      if (/HTTP 404/.test((r && r.error) || '')) skipRows.push({ id: raw.id, version, reason: 'gone' });
+      else complete = false;
+      return;
+    }
+    const { detail, geojson } = r;
+    const info = getGermanInfo(detail) || {};
+    const title = firstText(raw.i18nTitle && raw.i18nTitle.de, info.headline, info.event, '');
+    const areas = getAreaNames(info);
+    const scope = getGeographicScope(geojson, areas, title, cleanText(info.description), mode);
+    if (!scope) { stat.outside++; skipRows.push({ id: raw.id, version, reason: `outside:${mode}` }); return; }
+    const item = buildItem(raw, detail, geojson, scope, ctx.now);
+    if (!item) { stat.dropped++; skipRows.push({ id: raw.id, version, reason: `outside:${mode}` }); return; }
+    item.content_key = raw.modeKey;
+    stat[scope]++;
+    items.push(item);
+  });
+  if (skipRows.length) await saveSkip(ctx, skipRows);
+
+  ctx.log(`nina: лент ${feedResults.filter((f) => f.ok).length}/${FEEDS.length}, в лентах ${all.length}, проверено ${batch.length}, ` +
+    `в очереди ещё ${queue.length - batch.length}, из кэша пропущено ${skipped}; ` +
+    `Вупперталь ${stat.city}, NRW ${stat.region}, вся страна ${stat.national}, вне региона ${stat.outside}, отброшено ${stat.dropped}, ошибок ${stat.failed}`);
+
+  return syncSource(ctx, meta.id, items, { resolveMissing: complete, resolvedScopes: null });
 }
 
 // --------------------------------------------------
-// Диагностика
+// Диагностика (админка -> Источники -> «Проба»)
 // --------------------------------------------------
 
 export async function probe(ctx) {
-  const results = {};
-
+  const feeds = {};
+  let first = null;
   for (const feed of FEEDS) {
     const url = `${BASE_URL}/${feed}/mapData.json`;
-
     try {
-      const result = await fetchJson(url);
-      const array = extractArray(result?.json);
-
-      results[feed] = {
-        url,
-        ok: Boolean(array),
-        count: array?.length ?? null,
-        sample: array?.slice(0, 2) ?? null
-      };
-    } catch (error) {
-      results[feed] = {
-        url,
-        ok: false,
-        error: error?.message || String(error)
-      };
-    }
+      const array = extractArray((await fetchJson(url, { retries: 0 })).json);
+      feeds[feed] = { url, ok: !!array, count: array ? array.length : null, sample: array ? array.slice(0, 2) : null };
+      if (!first && array) first = array.map((x) => normalizeFeedItem(x, feed)).find((x) => x && ID_OK.test(x.id) && !foreignState(x));
+    } catch (e) { feeds[feed] = { url, ok: false, error: (e && e.message) || String(e) }; }
   }
-
-  return {
-    city: CITY.name,
-    cityBbox: CITY_BBOX,
-    nrwBbox: NRW_BBOX,
-    geographicPolicy: {
-      city: 'Warnings intersecting Wuppertal',
-      region: 'Warnings intersecting NRW',
-      national: 'Germany-wide warnings only when their geometry intersects NRW'
-    },
-    feeds: results
-  };
+  const out = { city: CITY.name, mode: ctx.env.NINA_SCOPE === 'city' ? 'city' : 'nrw', cityBbox: CITY_BBOX, nrwBbox: NRW_BBOX, feeds };
+  if (first) {
+    const id = encodeURIComponent(first.id);
+    try { out.detail_sample = (await fetchJson(`${BASE_URL}/warnings/${id}.json`, { retries: 0 })).text.slice(0, 2500); } catch (e) { out.detail_error = e.message; }
+    try {
+      const gj = (await fetchJson(`${BASE_URL}/warnings/${id}.geojson`, { retries: 0 })).json;
+      out.geojson = { id: first.id, types: getGeoJsonGeometries(gj).map((g) => g.type), bounds: geoBounds(gj) };
+    } catch (e) { out.geojson_error = e.message; }
+  }
+  return out;
 }
