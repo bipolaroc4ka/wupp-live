@@ -118,8 +118,14 @@ const MONTH_PATTERN =
 const WEEKDAYS =
   '(?:Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)';
 
+// Суффиксы улиц с заглавной и строчной первой буквой: «Pahlkestraße» (слитно) и «Siebeneicker Straße» (отдельным словом).
+// Раньше были только строчные, поэтому «Friedrich-Ebert-Straße» и «Siebeneicker Straße» вообще не находились.
 const STREET_SUFFIX =
-  '(?:straße|strasse|str\\.?|weg|platz|allee|ufer|gasse|ring|damm|chaussee|steig|pfad|markt|wall|stieg|bogen|brücke|bruecke)';
+  '(?:[Ss]traße|[Ss]trasse|[Ss]tr\\.?|[Ww]eg|[Pp]latz|[Aa]llee|[Uu]fer|[Gg]asse|[Rr]ing|[Dd]amm|[Cc]haussee|[Ss]teig|[Pp]fad|[Mm]arkt|[Ww]all|[Ss]tieg|[Bb]ogen|[Bb]rücke|[Bb]ruecke)';
+
+// Слова, с которых название улицы не начинается («Sanierung Siebeneicker Straße», «Der Weg»)
+const NOT_STREET_START =
+  '(?!(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Auf|An|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung|Teilsperrung|Sanierung|Arbeiten|Bauarbeiten|Baustelle|Fahrbahnsanierung|Straßenbauarbeiten|Umleitung|Verkehr|Neue|Neuer|Neues|Heute|Morgen|Schluss)\\s)';
 
 function decodeHtml(value) {
   return String(value || '')
@@ -266,11 +272,11 @@ function extractStreetCandidates(text) {
 
   const patterns = [
     new RegExp(
-      `\\b[A-ZÄÖÜ][\\p{L}\\d'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d'’\\-]*){0,4}\\s+${STREET_SUFFIX}\\b`,
+      `\\b${NOT_STREET_START}[A-ZÄÖÜ][\\p{L}\\d'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d'’\\-]*){0,1}\\s+${STREET_SUFFIX}\\b`,
       'gu'
     ),
     new RegExp(
-      `\\b[A-ZÄÖÜ][\\p{L}\\d'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d'’]*)*${STREET_SUFFIX}\\b`,
+      `\\b${NOT_STREET_START}[A-ZÄÖÜ][\\p{L}\\d'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d'’]*)*-?${STREET_SUFFIX}\\b`,
       'gu'
     ),
     /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
@@ -307,46 +313,25 @@ function extractStreetCandidates(text) {
   return [...unique.values()];
 }
 
+// Название для «zwischen X und Y»: слова с заглавной буквы, возможно с предлогом («Am Elisabetheim»).
+// Регулярка БЕЗ флага i: иначе заглавная буква в классе совпадала бы и со строчными, и фраза «… und Katernberg verläuft»
+// захватила бы лишнее.
+const BETWEEN_NAME = String.raw`(?:(?:Am|Im|An|Auf|Beim|Zum|Zur|Vom)(?:\s+(?:der|dem|den))?\s+)?[A-ZÄÖÜ][\p{L}\d'’-]*(?:\s+[A-ZÄÖÜ][\p{L}\d'’-]*){0,3}`;
+const BETWEEN_RE = new RegExp(String.raw`\b[Zz]wischen\s+(${BETWEEN_NAME})\s+und\s+(${BETWEEN_NAME})`, 'u');
+
 function extractBetweenLocation(text) {
-  const match = /\bzwischen\s+/i.exec(text);
+  const match = BETWEEN_RE.exec(text);
 
   if (!match) return null;
 
-  const segment = text.slice(match.index + match[0].length);
-  const sentenceEnd = segment.search(/[.!?;\n]/);
-
-  const clause = (
-    sentenceEnd >= 0
-      ? segment.slice(0, sentenceEnd)
-      : segment
-  ).trim();
-
-  const separator = /\s+und\s+/i.exec(clause);
-
-  if (!separator) return null;
-
-  const first = clause
-    .slice(0, separator.index)
-    .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
-    .trim();
-
-  const second = clause
-    .slice(separator.index + separator[0].length)
-    .replace(/^[\s,;:]+|[\s,;:.!?]+$/g, '')
-    .trim();
+  const first = match[1].trim();
+  const second = match[2].trim();
 
   if (
     first.length < 3 ||
     second.length < 3 ||
     first.length > 100 ||
     second.length > 100
-  ) {
-    return null;
-  }
-
-  if (
-    !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(first) ||
-    !/^[A-ZÄÖÜ][\p{L}\d'’ -]*$/u.test(second)
   ) {
     return null;
   }
@@ -369,7 +354,25 @@ function extractLocation(text) {
 
   const between = extractBetweenLocation(text);
 
-  if (between) return between;
+  if (between) {
+    // «Sanierung der Siebeneicker Straße … zwischen Untenrohleder und Am Elisabetheim»: улица — это Siebeneicker Straße,
+    // а «zwischen …» только ограничивает участок (это не улицы, их геокодирование дало бы неверную точку)
+    const bounds = between.streets.map((x) => x.toLowerCase());
+    const main = extractStreetCandidates(text).find((c) => {
+      const name = c.name.toLowerCase();
+      return !bounds.some((b) => b === name || b.includes(name) || name.includes(b));
+    });
+
+    if (main) {
+      return {
+        type: 'between',
+        streets: [main.name],
+        label: `${main.name}, ${between.label}`
+      };
+    }
+
+    return between;
+  }
 
   const candidates = extractStreetCandidates(text);
 
@@ -885,7 +888,7 @@ async function toEvent(ctx, item, analysis) {
 
   const { start, end } = parseGermanDates(text, ctx.now);
 
-  if (end && end.getTime() + 2 * DAY < ctx.now) {
+  if (end && end.getTime() + DAY < ctx.now) {
     return null;
   }
 
@@ -894,7 +897,8 @@ async function toEvent(ctx, item, analysis) {
   const ttlDays = analysis.topic ? TOPIC_TTL_DAYS : EVENT_TTL_DAYS;
   const base = Number.isFinite(publishedMs) ? publishedMs : Math.floor(ctx.now / DAY) * DAY;
   const anchor = Math.max(base, start ? start.getTime() : 0);
-  const expiresAt = end ? end.getTime() + 2 * DAY : anchor + ttlDays * DAY;
+  // дата окончания в тексте без времени: действует до конца этого дня
+  const expiresAt = end ? end.getTime() + DAY : anchor + ttlDays * DAY;
 
   // уже истёкшее не сохраняем: иначе статус «мигал» бы между RECENT и EXPIRED
   if (expiresAt <= ctx.now) return null;
