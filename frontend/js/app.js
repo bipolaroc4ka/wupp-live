@@ -15,11 +15,12 @@
   const GROUPS = ['emergency', 'traffic', 'roadworks', 'transit', 'infra', 'events'];
   const GROUP_COLOR = Object.fromEntries(GROUPS.map((g) => [g, `var(--c-${g})`]));
   const CAT_GROUP = {
-    fire: 'emergency', accident: 'emergency', police: 'emergency', rescue: 'emergency', hazard: 'emergency', emergency_other: 'emergency',
+    fire: 'emergency', accident: 'emergency', police: 'emergency', rescue: 'emergency', hazard: 'emergency', evacuation: 'emergency', emergency_other: 'emergency',
     road_jam: 'traffic', road_closure: 'traffic', road_accident: 'traffic', road_obstacle: 'traffic', traffic_other: 'traffic',
     roadworks: 'roadworks',
     transit_delay: 'transit', transit_cancel: 'transit', transit_detour: 'transit', transit_stop: 'transit',
     infra_power: 'infra', infra_water: 'infra', infra_damage: 'infra', flood: 'infra', heavy_rain: 'infra', warning_other: 'infra',
+    weather_storm: 'infra', weather_thunder: 'infra', weather_ice: 'infra', weather_heat: 'infra', weather_other: 'infra',
     event_big: 'events', event_crowd: 'events', event_restriction: 'events'
   };
   // Центры районов приблизительные (для навигации и показа примерной области), это не границы.
@@ -35,7 +36,8 @@
     { id: 'cronenberg', name: 'Cronenberg', c: [51.2040, 7.1330], r: 2300, keys: ['cronenberg'] },
     { id: 'vohwinkel', name: 'Vohwinkel', c: [51.2330, 7.0590], r: 2300, keys: ['vohwinkel'] }
   ];
-  const HOURS_OPTIONS = [3, 12, 24, 72, 168];
+  const SEVERITIES = new Set(['Minor', 'Moderate', 'Severe', 'Extreme']); // степени опасности CAP (NINA)
+  const HOURS_OPTIONS =[3, 12, 24, 72, 168];
   const DEFAULT_HOURS = 24;
 
   // ---------- состояние ----------
@@ -493,7 +495,8 @@
     setKids($('#dBadges'),
       el('span', { class: 'badge', style: `color:${GROUP_COLOR[g]}` }, ICON.forCategory(ev.category, 15), t('c_' + ev.category)),
       el('span', { class: 'badge ' + ev.status, text: t('st_' + ev.status) }),
-      ev.is_verified ? el('span', { class: 'badge official', text: t('official') }) : null);
+      ev.is_verified ? el('span', { class: 'badge official', text: t('official') }) : null,
+      ev.source === 'nina' && SEVERITIES.has(ev.severity) ? el('span', { class: 'badge', text: t('sev_' + ev.severity) }) : null);
     const tx = texts(ev, state.showOriginal);
     $('#dTitle').textContent = tx.title;
     $('#dDesc').textContent = tx.desc;
@@ -537,6 +540,7 @@
         lagMs != null && lagMs > 60000 ? el('span', { class: 'tl-lag', text: t('lagPub', { d: fmtDur(lagMs) }) }) : null));
     } else rows.push(tlRow(t('tPublished'), t('tPubUnknown'), true));
 
+    if (ev.expires_at) rows.push(tlRow(t('tExpires'), withRel(ev.expires_at)));
     rows.push(tlRow(t('tReceived'), withRel(ev.received_at)));
     if (Math.abs(Date.parse(ev.updated_at) - Date.parse(ev.received_at)) > 60000) rows.push(tlRow(t('tUpdated'), withRel(ev.updated_at)));
     $('#dTimes').replaceChildren(...rows);
