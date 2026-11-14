@@ -2,10 +2,13 @@
 window.WL_CONFIG = {
   // Адрес вашего Worker после деплоя, без слэша на конце. Пример:
   // 'https://wuppertal-live-api.ВАШ-САБДОМЕН.workers.dev'
-  API_BASE: 'https://wupp-live.isychev10.workers.dev',
+  API_BASE: 'https://wuppertal-live-api.isychev10.workers.dev',
 
   // Автообновление данных, секунд (когда вкладка видима).
   REFRESH_SEC: 60,
+
+  // Работы и перекрытия старше этого числа дней уходят на вкладку «Долгосрочные» (необязательный параметр, по умолчанию 1).
+  LONG_TERM_DAYS: 1,
 
   CITY: {
     name: 'Wuppertal',
