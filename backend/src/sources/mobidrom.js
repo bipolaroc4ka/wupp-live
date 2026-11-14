@@ -461,14 +461,19 @@ async function makeEvent(ctx, situation) {
   const period = situation.start && situation.end
     ? `${fmtDate(situation.start)} – ${fmtDate(situation.end)}`
     : situation.start ? `seit ${fmtDate(situation.start)}` : situation.end ? `bis ${fmtDate(situation.end)}` : null;
-  const extras = [
-    period ? `Bauzeit: ${period}` : null,
-    situation.route ? `Umleitung: ${truncate(situation.route, 400)}` : null,
+  // Порядок строк: что делают → где → когда → ограничения → объезд. Пустые и бессодержательные значения не выводим.
+  const lanesInfo = situation.lanes && !/^0 eingeschränkt$/.test(situation.lanes) ? situation.lanes : null;
+  const place = situation.street && !String(situation.description || '').includes(situation.street) ? situation.street : null;
+  const lines = [
     situation.workTypes.length ? `Art der Arbeiten: ${situation.workTypes.join(', ')}` : null,
-    situation.lanes ? `Fahrstreifen: ${situation.lanes}` : null,
-    situation.window ? `Zeitfenster: ${situation.window}` : null
+    situation.description ? `Hinweis: ${String(situation.description).trim().replace(/\s*\n+\s*/g, '; ')}` : null,
+    place ? `Ort: ${place}` : null,
+    period ? `Bauzeit: ${period}` : null,
+    situation.window ? `Zeitfenster: ${situation.window}` : null,
+    lanesInfo ? `Fahrstreifen: ${lanesInfo}` : null,
+    situation.route ? `Umleitung: ${truncate(situation.route, 400)}` : null
   ].filter(Boolean);
-  const description = [situation.description, extras.join('\n')].filter(Boolean).join('\n\n');
+  const description = lines.join('\n');
   // Если в ленте есть структурированный тип ограничения, он точнее текста («Fahrstreifen gesperrt» ≠ дорога закрыта)
   const category = situation.hasStructure ? (situation.closure ? 'road_closure' : 'roadworks') : classify(text);
   return {
