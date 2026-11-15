@@ -515,37 +515,41 @@ export function classify(text, feed, capCategory) {
 // Сборка записи
 // --------------------------------------------------
 
+
 function buildDescription(info, areaNames, extra) {
   const parts = [];
-  const description = cleanText(info.description).replace(/^Es folgt eine (?:wichtige )?(?:Information|Mitteilung|Meldung|Warnung)[^\n.]*\.\s*/i, '');
+
+  const description = cleanText(info.description)
+    .replace(
+      /^Es folgt eine (?:wichtige )?(?:Information|Mitteilung|Meldung|Warnung)[^\n.]*\.\s*/i,
+      ""
+    );
+
   const instruction = cleanText(info.instruction);
-  if (description) parts.push(truncateText(description, 2200));
-  if (instruction && instruction !== description) parts.push(`Handlungsempfehlung: ${truncateText(instruction, 600)}`);
-  if (areaNames.length) {
-    parts.push(`Betroffenes Gebiet: ${truncateText(areaNames.slice(0, 8).join('; ') + (areaNames.length > 8 ? ' …' : ''), 300)}`);
+
+  // Сохраняем полное описание без искусственного ограничения.
+  if (description) parts.push(description);
+
+  // Сохраняем полные рекомендации.
+  if (instruction && instruction !== description) {
+    parts.push(`Handlungsempfehlung: ${instruction}`);
   }
+
+  // Сохраняем все затронутые территории.
+  if (areaNames.length) {
+    parts.push(`Betroffenes Gebiet: ${areaNames.join("; ")}`);
+  }
+
   if (extra) parts.push(extra);
+
   const contact = cleanText(info.contact);
-  if (contact) parts.push(`Kontakt: ${truncateText(contact, 200)}`);
-  return parts.length ? parts.join('\n\n') : null;
+  if (contact) {
+    parts.push(`Kontakt: ${contact}`);
+  }
+
+  return parts.length ? parts.join("\n\n") : null;
 }
 
-function sizeLabel(b) {
-  const r50 = (m) => Math.max(50, Math.round(m / 50) * 50);
-  const lat = (b.north + b.south) / 2;
-  return `${r50((b.east - b.west) * 111320 * Math.cos((lat * Math.PI) / 180))} × ${r50((b.north - b.south) * 111320)} m`;
-}
-
-const keyOf = (raw) => `${SCHEMA}|${raw.id}|${raw.version ?? ''}`;
-
-// Минимальная запись из mapData: только чтобы не терять предупреждение, детали уже сохранены в базе.
-function minimalItem(raw) {
-  const title = cleanText(firstText(raw.i18nTitle && raw.i18nTitle.de, 'Amtliche Warnung'));
-  return {
-    source_event_id: raw.id, content_key: keyOf(raw), title, category: classify(title, raw.feed),
-    status: 'ACTIVE', geo_precision: 'none', is_verified: 1
-  };
-}
 
 // Срок действия, названный в тексте: до даты («bis 20.11.2026, 18:00 Uhr») или без конца («bis auf Weiteres»,
 // «bis zur Entwarnung»). Конец без явной даты не выдумываем: precision 'open' означает «до отмены».
