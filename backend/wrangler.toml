@@ -1,53 +1,82 @@
+
 # Wuppertal Live — конфигурация Cloudflare Worker.
-# НИЧЕГО не разворачивается автоматически: деплой вы запускаете сами (см. docs/CLOUDFLARE.md).
+# Деплой выполняется вручную (см. docs/CLOUDFLARE.md).
 
 name = "wuppertal-live-api"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
+# Сохранять переменные, заданные через Cloudflare Dashboard,
+# при деплое через Wrangler.
+keep_vars = true
+
+# Логи и наблюдаемость.
 [observability]
 enabled = true
 
-# 1) Создайте базу:  npx wrangler d1 create wuppertal-live
-# 2) Вставьте выданный database_id вместо значения ниже.
+# ============================================================
+# D1 DATABASE
+# ============================================================
+
 [[d1_databases]]
 binding = "DB"
 database_name = "wuppertal-live"
 database_id = "97ba1363-f8de-44b7-81d7-239074c6a100"
 
-# Необязательно: машинный перевод текстов событий на русский (Workers AI, модель m2m100, есть бесплатная квота).
-# Без этих двух строк перевод просто выключен, приложение показывает немецкий оригинал.
+# ============================================================
+# WORKERS AI
+# ============================================================
+
+# Binding для машинного перевода событий.
+# Используется моделью M2M100.
 [ai]
 binding = "AI"
 
-# Три cron-триггера (лимит бесплатного плана — 5 на аккаунт).
-# Выражения ДОЛЖНЫ совпадать с CRON_MAP в src/cron.js.
+# ============================================================
+# CRON TRIGGERS
+# ============================================================
+
+# Выражения должны совпадать с CRON_MAP в src/cron.js.
 [triggers]
 crons = [
-  "*/2 * * * *",   # Autobahn (дороги)
-  "*/5 * * * *",   # NINA (официальные предупреждения)
-  "*/10 * * * *"   # Presseportal (Feuerwehr/Polizei) + служебные задачи
+  "*/2 * * * *",   # Autobahn — дорожные события
+  "*/5 * * * *",   # NINA — официальные предупреждения
+  "*/10 * * * *"   # Presseportal + служебные задачи, включая переводы
 ]
 
+# ============================================================
+# ENVIRONMENT VARIABLES
+# ============================================================
+
 [vars]
-# Адрес вашего frontend (origin, без пути и без слэша на конце). Несколько — через запятую.
-# Пример: "https://ваш-логин.github.io"
+
+# Разрешённый frontend origin.
 ALLOWED_ORIGINS = "https://bipolaroc4ka.github.io"
 
-# Nominatim требует идентифицировать приложение. Укажите свою контактную почту или URL проекта.
+# Контакт для Nominatim.
 NOMINATIM_CONTACT = "isychev10@gmail.com"
 
-# Presseportal: ID «Newsroom» через запятую.
-# 115885 = Feuerwehr Wuppertal (виден в адресе https://www.presseportal.de/nr/115885).
-# ID Polizei Wuppertal найдите на её странице в Presseportal (…/nr/<ID>) и добавьте через запятую.
+# Presseportal Newsroom IDs.
 PRESSEPORTAL_OFFICE_IDS = "115885"
 
-# Через сколько часов пресс-релиз перестаёт считаться «недавним» (RECENT -> EXPIRED).
+# Время жизни пресс-релизов в часах.
 PRESS_TTL_HOURS = "12"
 
-# Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
+# Автобаны, данные которых запрашиваются.
 AUTOBAHN_ROADS = "A1,A46,A535,A43"
 
-# Секреты (НЕ хранить здесь!) добавляются командами:
-#   npx wrangler secret put ADMIN_TOKEN
-#   npx wrangler secret put PRESSEPORTAL_API_KEY
+# Машинный перевод.
+# m2m — использовать M2M100 вместо Gemma.
+TRANSLATE_PROVIDER = "m2m"
+
+# ============================================================
+# SECRETS
+# ============================================================
+
+# Секреты добавляются отдельно через Wrangler:
+#
+# npx wrangler secret put ADMIN_TOKEN
+# npx wrangler secret put PRESSEPORTAL_API_KEY
+# npx wrangler secret put DEEPL_API_KEY
+#
+# Не хранить секреты в этом файле или GitHub.
