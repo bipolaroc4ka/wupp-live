@@ -519,8 +519,6 @@ function buildDescription(info, areaNames, extra) {
   const parts = [];
   const description = cleanText(info.description).replace(/^Es folgt eine (?:wichtige )?(?:Information|Mitteilung|Meldung|Warnung)[^\n.]*\.\s*/i, '');
   const instruction = cleanText(info.instruction);
-  const facts = textFacts(`${cleanText(info.headline)} ${description}`);
-  if (facts.length) parts.push(facts.join('\n'));
   if (description) parts.push(truncateText(description, 2200));
   if (instruction && instruction !== description) parts.push(`Handlungsempfehlung: ${truncateText(instruction, 600)}`);
   if (areaNames.length) {
@@ -549,24 +547,23 @@ function minimalItem(raw) {
   };
 }
 
-// Ключевые сроки, названные в тексте, — отдельными строками в начале описания («Beginn: ab 22:00 Uhr»,
-// «Dauer: bis auf Weiteres …»). Берём формулировку как в источнике; дату не достраиваем.
-export function textFacts(text) {
+// Срок действия, названный в тексте: до даты («bis 20.11.2026, 18:00 Uhr») или без конца («bis auf Weiteres»,
+// «bis zur Entwarnung»). Конец без явной даты не выдумываем: precision 'open' означает «до отмены».
+export function untilFromText(text, publishedMs) {
   const t = String(text || '').replace(/\s+/g, ' ');
-  const out = [];
-  const st = /\bab\s+(?:dem\s+)?((?:\d{1,2}\.\d{1,2}\.(?:\d{2,4})?)?(?:\s*(?:um|,)?\s*)?(?:\d{1,2}(?::\d{2})?\s*Uhr)?)/i.exec(t);
-  if (st && st[1] && st[1].trim() && /\d/.test(st[1])) {
-    const when = st[1].replace(/\s+/g, ' ').trim();
-    out.push(`Beginn: ab ${when}${/\d{1,2}\.\d{1,2}\./.test(when) ? '' : ' (Datum im Text nicht genannt)'}`);
+  const m = /\bbis(?:\s+(?:zum|einschließlich))?\s+(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})?(?:\s*,?\s*(?:um\s+)?(\d{1,2})(?::(\d{2}))?\s*Uhr)?/i.exec(t);
+  if (m) {
+    const base = Number.isFinite(publishedMs) ? berlinYMD(publishedMs) : null;
+    let y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : base && base.y;
+    const mo = +m[2], d = +m[1], h = m[4] != null ? +m[4] : null, mi = m[5] != null ? +m[5] : 0;
+    if (y && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && (h == null || (h <= 23 && mi <= 59))) {
+      let ms = berlinToUtc(y, mo, d, h ?? 23, h != null ? mi : 59);
+      if (!m[3] && Number.isFinite(publishedMs) && ms < publishedMs - 86400e3) ms = berlinToUtc(y + 1, mo, d, h ?? 23, h != null ? mi : 59);
+      return { ms, precision: h != null ? 'minute' : 'day' };
+    }
   }
-  const dur = [];
-  if (/\bbis auf Weiteres\b/i.test(t)) dur.push('bis auf Weiteres');
-  const ent = /\bbis zur\s+((?:\S+\s+)?Entwarnung(?:\s+durch\s+(?:das|die|den)\s+[^.,;]+?)?)(?=[.,;]|\s+Die\b|\s+Das\b|$)/i.exec(t);
-  if (ent) dur.push(`bis zur ${ent[1].trim()}`);
-  const until = /\bbis(?:\s+(?:zum|einschließlich))?\s+(\d{1,2}\.\d{1,2}\.(?:\d{2,4})?(?:\s*,?\s*(?:um\s+)?\d{1,2}(?::\d{2})?\s*Uhr)?)/i.exec(t);
-  if (until) dur.push(`bis ${until[1].trim()}`);
-  if (dur.length) out.push(`Dauer: ${dur.join(', ')}`);
-  return out;
+  if (/\bbis auf Weiteres\b|\bbis auf Widerruf\b|\bbis zum Widerruf\b|\bbis zur\s+(?:\S+\s+)?(?:Entwarnung|Aufhebung)\b/i.test(t)) return { ms: null, precision: 'open' };
+  return null;
 }
 
 // CAP «references»: «sender,identifier,sent sender,identifier,sent …» — предыдущие версии, которые заменяет это сообщение.
@@ -635,12 +632,30 @@ export function buildItem(raw, detail, geojson, scope, now, inherited = null) {
     location = truncateText(areaNames.length ? areaNames.slice(0, 3).join('; ') + (areaNames.length > 3 ? ' …' : '') : 'Nordrhein-Westfalen', 120);
   }
 
-  const publishedMs = parseDate(firstText(detail && detail.sent, raw.startDate));
+  const publishedIso = parseDate(firstText(detail && detail.sent, raw.startDate));
+  const publishedMs = Date.parse(publishedIso || '');
   const isUpdate = String((detail && detail.msgType) || raw.type || '').toLowerCase() === 'update';
-  // начало уже известно из предыдущей версии (она у нас сохранена): оно не меняется от версии к версии
-  const fromText = inherited ? { ms: Date.parse(inherited.event_time), precision: inherited.time_precision || 'minute' }
-    : startFromText(`${cleanText(info.headline)}\n${cleanText(info.description)}`, Date.parse(publishedMs || ''), { isUpdate });
-  const onset = fromText && Number.isFinite(fromText.ms) ? new Date(fromText.ms).toISOString() : parseDate(firstText(info.onset, info.effective));
+  const bodyText = `${cleanText(info.headline)}\n${cleanText(info.description)}`;
+
+  // «Произошло» (event_time): только если источник называет время самого явления. Для погоды (DWD) и паводков (LHP)
+  // onset — начало явления. В MOWAS/KATWARN/BIWAPP время из текста («ab 22:00 Uhr») — начало ДЕЙСТВИЯ меры, а не аварии:
+  // оно идёт в valid_from, а время происшествия остаётся неизвестным.
+  const phenomenon = provider === 'DWD' || provider === 'LHP';
+  const capStart = parseDate(firstText(info.onset, info.effective));
+  const eventTime = phenomenon ? capStart : null;
+
+  // «Действует с» / «Действует до»
+  let from = null;
+  if (!phenomenon) {
+    if (inherited && inherited.valid_from) from = { iso: inherited.valid_from, precision: inherited.valid_from_precision || 'minute' };
+    else {
+      const t = startFromText(bodyText, publishedMs, { isUpdate });
+      if (t) from = { iso: new Date(t.ms).toISOString(), precision: t.precision };
+      else if (capStart && Number.isFinite(publishedMs) && Date.parse(capStart) - publishedMs >= 5 * 60000) from = { iso: capStart, precision: 'minute' }; // запланированное в самом CAP
+    }
+  }
+  const u = untilFromText(bodyText, publishedMs);
+  const until = u ? { iso: u.ms != null ? new Date(u.ms).toISOString() : null, precision: u.precision } : null;
   const severity = [info.severity, raw.severity].find((s) => SEVERITIES.has(s)) || null;
   const text = [title, cleanText(info.headline), cleanText(info.event)].join(' ');
 
@@ -656,9 +671,13 @@ export function buildItem(raw, detail, geojson, scope, now, inherited = null) {
     latitude: lat,
     longitude: lon,
     location_name: location,
-    event_time: onset,                       // onset/effective из CAP; startDate в mapData — время выпуска версии, не явления
-    time_precision: onset ? (fromText && Number.isFinite(fromText.ms) ? fromText.precision : 'minute') : 'unknown',
-    published_at: parseDate(firstText(detail && detail.sent, raw.startDate)),
+    event_time: eventTime,                   // только время явления (DWD/LHP); startDate в mapData — время выпуска версии
+    time_precision: eventTime ? 'minute' : 'unknown',
+    valid_from: from ? from.iso : null,
+    valid_from_precision: from ? from.precision : null,
+    valid_until: until ? until.iso : null,
+    valid_until_precision: until ? until.precision : null,
+    published_at: publishedIso,
     status: 'ACTIVE',
     status_reason: `nina_${scope}_warning`,
     confidence: scope === 'city' ? 0.95 : 0.8,
@@ -695,7 +714,7 @@ async function inheritedStart(env, detail) {
     if (String((detail && detail.msgType) || '').toLowerCase() !== 'update') return null;
     const refs = parseReferences(detail && detail.references).slice(0, 5);
     for (const r of refs) {
-      const row = await env.DB.prepare('SELECT event_time, time_precision FROM events WHERE id = ? AND event_time IS NOT NULL')
+      const row = await env.DB.prepare('SELECT valid_from, valid_from_precision FROM events WHERE id = ? AND valid_from IS NOT NULL')
         .bind(`${meta.id}:${await shortId(r.id)}`).first();
       if (row) return row;
     }
