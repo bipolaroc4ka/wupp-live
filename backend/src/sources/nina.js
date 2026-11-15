@@ -634,7 +634,7 @@ export function buildItem(raw, detail, geojson, scope, now, inherited = null) {
 
   const publishedIso = parseDate(firstText(detail && detail.sent, raw.startDate));
   const publishedMs = Date.parse(publishedIso || '');
-  const isUpdate = String((detail && detail.msgType) || raw.type || '').toLowerCase() === 'update';
+  const isUpdate = isUpdateMsg(detail, raw);
   const bodyText = `${cleanText(info.headline)}\n${cleanText(info.description)}`;
 
   // «Произошло» (event_time): только если источник называет время самого явления. Для погоды (DWD) и паводков (LHP)
@@ -708,14 +708,29 @@ async function mapLimit(items, limit, callback) {
 // Идентификатор попадает в путь запроса: пропускаем только безопасные символы.
 const ID_OK = /^[\w.\-:]{1,200}$/;
 
+// Обновление: msgType/type Update либо ссылка на предыдущие версии (CAP references).
+function isUpdateMsg(detail, raw) {
+  return String((detail && detail.msgType) || (raw && raw.type) || '').toLowerCase() === 'update' ||
+    parseReferences(detail && detail.references).length > 0;
+}
+
 // Начало из предыдущей версии этого же предупреждения (по CAP references), если она есть в базе.
-async function inheritedStart(env, detail) {
+async function inheritedStart(env, detail, raw) {
   try {
-    if (String((detail && detail.msgType) || '').toLowerCase() !== 'update') return null;
+    if (!isUpdateMsg(detail, raw)) return null;
     const refs = parseReferences(detail && detail.references).slice(0, 5);
     for (const r of refs) {
       const row = await env.DB.prepare('SELECT valid_from, valid_from_precision FROM events WHERE id = ? AND valid_from IS NOT NULL')
         .bind(`${meta.id}:${await shortId(r.id)}`).first();
+      if (row) return row;
+    }
+    // предыдущей версии по ссылке нет (удалена или не сохранена): ищем самую раннюю запись с тем же заголовком
+    const info = getGermanInfo(detail) || {};
+    const title = firstText(raw && raw.i18nTitle && raw.i18nTitle.de, info.headline, info.event, '');
+    if (title) {
+      const row = await env.DB.prepare(
+        'SELECT valid_from, valid_from_precision FROM events WHERE source = ? AND title = ? AND valid_from IS NOT NULL ORDER BY received_at ASC LIMIT 1'
+      ).bind(meta.id, truncateText(title, 300)).first();
       if (row) return row;
     }
   } catch { /* необязательное улучшение */ }
@@ -822,7 +837,7 @@ export async function run(ctx) {
   const skipRows = [];
   const stat = { city: 0, region: 0, national: 0, outside: 0, dropped: 0, failed: 0 };
   const inheritedList = [];
-  for (const r of loaded) inheritedList.push(r && !r.error ? await inheritedStart(ctx.env, r.detail) : null);
+  for (const r of loaded) inheritedList.push(r && !r.error ? await inheritedStart(ctx.env, r.detail, r.raw) : null);
   loaded.forEach((r, i) => {
     const raw = batch[i];
     const version = Number(raw.version || 0);
