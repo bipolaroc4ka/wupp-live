@@ -1,17 +1,16 @@
-// Presseportal (news aktuell / dpa) — пресс-релизы Feuerwehr Wuppertal и (по желанию) Polizei Wuppertal.
-// Нужен API-ключ (секрет PRESSEPORTAL_API_KEY), его выдаёт https://api.presseportal.de — там же условия использования.
+
+// Presseportal (news aktuell / dpa) — RSS Feuerwehr und Polizei Wuppertal.
+// Используются публичные RSS-ленты. API-ключ не требуется.
 //
 // ЧЕСТНО О ДАННЫХ:
-//  * Это пресс-релизы, а не диспетчерская лента: публикация идёт через часы после события, и не обо всех выездах.
-//  * Поэтому статус всегда RECENT («актуальность неизвестна»), никогда LIVE/ACTIVE.
-//  * Время происшествия берётся только из текста релиза; если не найдено — «неизвестно». Время публикации не подставляется.
-//  * Полицейский newsroom охватывает Wuppertal, Remscheid и Solingen: берутся только релизы с датой-строкой «Wuppertal (ots)».
-//
-// ВАЖНО: формат ответа API в этой разработке не проверялся вживую (нужен ключ). Парсер защитный;
-// проверьте форму через админку: «Проба» (GET /api/admin/sources/presseportal/probe).
-// Адрес и название параметра ключа вынесены в константы ниже на случай расхождения с документацией.
+//  * Это пресс-релизы, а не диспетчерская лента.
+//  * Статус публикаций — RECENT, никогда LIVE/ACTIVE.
+//  * Время происшествия извлекается только из текста релиза.
+//  * Время публикации не подставляется вместо времени происшествия.
+//  * Полицейский newsroom охватывает Wuppertal, Remscheid и Solingen.
+//    Поэтому принимаются только публикации с датой-строкой Wuppertal (ots).
 
-import { fetchJson, truncate } from '../util.js';
+import { fetchWithRetry, truncate } from '../util.js';
 import { syncSource } from '../events.js';
 import { extractStreet, geocodeStreet } from '../geo.js';
 import { parseEventTime } from '../time.js';
@@ -24,124 +23,376 @@ export const meta = {
   group: 'emergency'
 };
 
-const API_BASE = 'https://api.presseportal.de/api';
-const KEY_PARAM = 'api_key';
 const MAX_AGE_DAYS = 7;
 
-function officeIds(env) {
-  return String(env.PRESSEPORTAL_OFFICE_IDS || '115885').split(',').map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
+const FEEDS = [
+  {
+    id: '115885',
+    publisher: 'Feuerwehr Wuppertal',
+    type: 'fire',
+    url: 'https://www.presseportal.de/rss/dienststelle_115885.rss2'
+  },
+  {
+    id: '11811',
+    publisher: 'Polizei Wuppertal',
+    type: 'police',
+    url: 'https://www.presseportal.de/rss/dienststelle_11811.rss2'
+  }
+];
+
+// Декодирование XML-сущностей без зависимости от DOMParser.
+// Работает в Cloudflare Workers.
+function decodeXml(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    )
+    .replace(/&#(\d+);/g, (_, dec) =>
+      String.fromCodePoint(parseInt(dec, 10))
+    )
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim();
 }
 
-function stories(json) {
-  const c = (json && json.content) ?? json;
-  let s = c && (c.story ?? c.stories ?? c.article);
-  if (!s && Array.isArray(c)) s = c;
-  if (!s) return [];
-  return Array.isArray(s) ? s : [s];
+// Извлекает содержимое XML-тега.
+// Поддерживает CDATA и обычный текст.
+function getTag(xml, tag) {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `<${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escaped}\\s*>`,
+    'i'
+  );
+
+  const match = String(xml || '').match(re);
+  return match ? decodeXml(match[1]) : '';
 }
 
+// Убирает HTML-разметку из RSS description.
+function cleanHtml(value) {
+  return String(value || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#160;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Разбирает RSS 2.0 и возвращает массив публикаций.
+function parseRss(xml) {
+  const source = String(xml || '');
+  const items = [];
+  const matches = source.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi);
+
+  for (const match of matches) {
+    const itemXml = match[1];
+
+    const title = getTag(itemXml, 'title');
+    const description =
+      getTag(itemXml, 'description') ||
+      getTag(itemXml, 'content:encoded');
+
+    const link = getTag(itemXml, 'link');
+    const guid = getTag(itemXml, 'guid');
+    const pubDate = getTag(itemXml, 'pubDate');
+
+    const id = guid || link;
+
+    if (!id || !title || !pubDate) continue;
+
+    items.push({
+      id,
+      title,
+      description: cleanHtml(description),
+      link,
+      pubDate
+    });
+  }
+
+  return items;
+}
+
+// Определяет город в начале пресс-релиза.
+// Например: Wuppertal (ots) -
 function dateline(body) {
-  const m = String(body || '').match(/^\s*([^()\n]{2,60}?)\s*\(ots\)/);
-  return m ? m[1].trim() : null;
+  const text = String(body || '');
+  const match = text.match(
+    /^\s*([^()\n]{2,60}?)\s*\(ots\)/i
+  );
+
+  return match ? match[1].trim() : null;
 }
 
 function classify(text, publisher) {
-  const t = text.toLowerCase();
-  if (/gefahrstoff|gasaustritt|einsturz|explosion|bombe|kampfmittel|evakuier/.test(t)) return 'hazard';
-  if (/\b\w*brand\b|\bfeuer(?!wehr)\w*|rauchentwicklung|löscharbeiten|flammen/.test(t)) return 'fire';
-  if (/verkehrsunfall|unfall|kollision|zusammenstoß/.test(t)) return 'accident';
-  if (publisher === 'police') return 'police';
-  if (/rettungsdienst|reanimation|rettungswagen|notarzt/.test(t)) return 'rescue';
+  const t = String(text || '').toLowerCase();
+
+  if (/gefahrstoff|gasaustritt|einsturz|explosion|bombe|kampfmittel|evakuier/.test(t)) {
+    return 'hazard';
+  }
+
+  if (/\b\w*brand\b|\bfeuer(?!wehr)\w*|rauchentwicklung|löscharbeiten|flammen/.test(t)) {
+    return 'fire';
+  }
+
+  if (/verkehrsunfall|unfall|kollision|zusammenstoß/.test(t)) {
+    return 'accident';
+  }
+
+  if (/rettungsdienst|reanimation|rettungswagen|notarzt/.test(t)) {
+    return 'rescue';
+  }
+
+  if (publisher === 'police') {
+    return 'police';
+  }
+
   return 'emergency_other';
 }
 
-function toItem(s, nowMs, ttlMs) {
-  const id = s.id ?? s.story_id;
-  const title0 = String(s.title || '').trim();
-  const body = String(s.body || s.teaser || '').trim();
-  const published = Date.parse(s.published || s.pubDate || s.date || '');
-  if (id == null || !title0 || !Number.isFinite(published)) return null; // без времени публикации не показываем
+function normalizeTitle(title) {
+  return String(title || '')
+    .replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*/i, '')
+    .trim();
+}
+
+function toItem(story, feed, nowMs, ttlMs) {
+  const title0 = String(story.title || '').trim();
+  const body = String(story.description || '').trim();
+
+  const published = Date.parse(story.pubDate);
+
+  if (!story.id || !title0 || !Number.isFinite(published)) {
+    return null;
+  }
+
+  // Не принимаем публикации из будущего.
+  if (published > nowMs + 10 * 60 * 1000) {
+    return null;
+  }
+
+  // Не обрабатываем слишком старые публикации.
+  if (nowMs - published > MAX_AGE_DAYS * 24 * 3600 * 1000) {
+    return null;
+  }
 
   const line = dateline(body);
   const text = `${title0} ${body}`;
-  if (line ? !/wuppertal/i.test(line) : !/wuppertal/i.test(text)) return null;
-  if (nowMs - published > MAX_AGE_DAYS * 24 * 3600e3) return null;
 
-  const publisher = /^POL/i.test(title0) ? 'police' : /^FW/i.test(title0) ? 'fire' : (s.office_type === 'police' ? 'police' : 'fire');
-  const publisherName = publisher === 'police' ? 'Polizei Wuppertal' : 'Feuerwehr Wuppertal';
-  const title = title0.replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*/i, '').trim() || title0;
-  const clean = body.replace(/^\s*[^()\n]{2,60}?\s*\(ots\)\s*[-–]?\s*/, '').replace(/\s+/g, ' ').trim();
+  if (feed.type === 'police') {
+    // Полицейская лента содержит также Remscheid и Solingen.
+    // Для неё обязательно наличие точной строки Wuppertal (ots).
+    if (!line || !/^wuppertal$/i.test(line)) {
+      return null;
+    }
+  } else {
+    // Для пожарной службы допускаем публикации с Wuppertal
+    // в заголовке или тексте, если отдельная дата-строка отсутствует.
+    if (line) {
+      if (!/^wuppertal$/i.test(line)) return null;
+    } else if (!/wuppertal/i.test(text)) {
+      return null;
+    }
+  }
 
-  const et = parseEventTime(`${title0}. ${body}`, published);
+  const title = normalizeTitle(title0);
+
+  const clean = body
+    .replace(/^\s*[^()\n]{2,60}?\s*\(ots\)\s*[-–]?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const eventText = `${title0}. ${body}`;
+  const eventTime = parseEventTime(eventText, published);
+
   const expiresMs = published + ttlMs;
   const expired = nowMs >= expiresMs;
-  const street = extractStreet(`${title0}. ${body}`);
+
+  const street = extractStreet(eventText);
 
   const item = {
-    source_event_id: String(id),
-    publisher: publisherName,
+    // Префикс источника исключает коллизии между двумя RSS-лентами.
+    source_event_id: `${feed.id}:${story.id}`,
+
+    publisher: feed.publisher,
     title,
+
     description: truncate(clean, 420) || null,
-    category: classify(text, publisher),
-    source_url: s.url || `https://www.presseportal.de/story/${id}`,
+
+    category: classify(text, feed.type),
+
+    source_url: story.link || (
+      String(story.id).startsWith('http')
+        ? story.id
+        : `https://www.presseportal.de/story/${encodeURIComponent(story.id)}`
+    ),
+
     geo_precision: 'none',
     location_name: street,
-    event_time: et.ms != null ? new Date(et.ms).toISOString() : null,
-    time_precision: et.precision,
+
+    event_time: eventTime.ms != null
+      ? new Date(eventTime.ms).toISOString()
+      : null,
+
+    time_precision: eventTime.precision,
+
     published_at: new Date(published).toISOString(),
+
     status: expired ? 'EXPIRED' : 'RECENT',
-    status_reason: expired ? 'ttl' : 'press_release_actuality_unknown',
+    status_reason: expired
+      ? 'ttl'
+      : 'press_release_actuality_unknown',
+
     confidence: 0.5,
     is_verified: 1,
+
     expires_at: new Date(expiresMs).toISOString()
   };
 
   if (street && !expired) {
     item.enrich = async (ctx) => {
-      const g = await geocodeStreet(ctx, street);
-      if (!g) { item.geocode_attempts = 1; return; }
-      if (g.pending) return; // позже повторит retryGeocoding
-      item.geo_precision = g.precision;
-      item.district = g.district || null;
+      const geo = await geocodeStreet(ctx, street);
+
+      if (!geo) {
+        item.geocode_attempts = 1;
+        return;
+      }
+
+      if (geo.pending) return;
+
+      item.geo_precision = geo.precision;
+      item.district = geo.district || null;
       item.confidence = 0.6;
-      if (g.precision === 'street') { item.latitude = g.lat; item.longitude = g.lon; }
-      // district: координаты не сохраняем — на карте рисуется только приблизительная область района
+
+      if (geo.precision === 'street') {
+        item.latitude = geo.lat;
+        item.longitude = geo.lon;
+      }
+
+      // Для района координаты не сохраняем:
+      // на карте отображается только приблизительная область.
     };
   }
+
   return item;
 }
 
-async function fetchOffice(env, id) {
-  const q = new URLSearchParams({ [KEY_PARAM]: env.PRESSEPORTAL_API_KEY, format: 'json', limit: '30' });
-  return fetchJson(`${API_BASE}/article/publicservice/office/${id}?${q}`);
+async function fetchFeed(feed) {
+  const response = await fetchWithRetry(feed.url, {
+    headers: {
+      accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8',
+      'user-agent': 'WuppertalLive/1.0 (+https://github.com/bipolaroc4ka/wupp-live)'
+    },
+    timeoutMs: 10000,
+    retries: 2
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} from Presseportal RSS`);
+  }
+
+  const xml = await response.text();
+
+  if (!/<rss[\s>]/i.test(xml) && !/<feed[\s>]/i.test(xml)) {
+    throw new Error('Invalid RSS/XML response from Presseportal');
+  }
+
+  return {
+    xml,
+    stories: parseRss(xml)
+  };
 }
 
 export async function run(ctx) {
-  if (!ctx.env.PRESSEPORTAL_API_KEY) throw new Error('PRESSEPORTAL_API_KEY is not set');
-  const ids = officeIds(ctx.env);
-  if (!ids.length) throw new Error('PRESSEPORTAL_OFFICE_IDS is empty');
-  const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 12) * 3600e3;
+  const ttlMs = Math.max(
+    1,
+    parseFloat(ctx.env.PRESS_TTL_HOURS) || 12
+  ) * 3600 * 1000;
 
   const items = [];
-  let ok = 0, lastErr = null;
-  for (const id of ids) {
+
+  let successfulFeeds = 0;
+  let lastError = null;
+
+  for (const feed of FEEDS) {
     try {
-      const { json } = await fetchOffice(ctx.env, id);
-      ok += 1;
-      for (const s of stories(json)) {
-        const it = toItem(s, ctx.now, ttlMs);
-        if (it) items.push(it);
+      const result = await fetchFeed(feed);
+
+      successfulFeeds += 1;
+
+      let accepted = 0;
+
+      for (const story of result.stories) {
+        const item = toItem(story, feed, ctx.now, ttlMs);
+
+        if (item) {
+          items.push(item);
+          accepted += 1;
+        }
       }
-    } catch (e) { lastErr = e; ctx.log(`presseportal office ${id}: ${e.message}`); }
+
+      ctx.log(
+        `presseportal ${feed.type}: RSS items=${result.stories.length}, accepted=${accepted}`
+      );
+    } catch (error) {
+      lastError = error;
+
+      ctx.log(
+        `presseportal ${feed.type}: ${error.message}`
+      );
+    }
   }
-  if (!ok) throw lastErr || new Error('Presseportal request failed');
-  // Релизы не «завершаются» по исчезновению из списка: их актуальность ограничивается только TTL.
-  return syncSource(ctx, meta.id, items, { resolveMissing: false });
+
+  // Если обе ленты недоступны, источник считается ошибочным.
+  if (successfulFeeds === 0) {
+    throw lastError || new Error('All Presseportal RSS feeds failed');
+  }
+
+  // Не закрываем события только потому, что они исчезли из RSS.
+  // Актуальность ограничивается TTL.
+  return syncSource(ctx, meta.id, items, {
+    resolveMissing: false
+  });
 }
 
-export async function probe(ctx) {
-  if (!ctx.env.PRESSEPORTAL_API_KEY) throw new Error('PRESSEPORTAL_API_KEY is not set');
-  const id = officeIds(ctx.env)[0];
-  const { text } = await fetchOffice(ctx.env, id);
-  return { url: `${API_BASE}/article/publicservice/office/${id}?${KEY_PARAM}=***&format=json&limit=30`, sample: text.slice(0, 1500) };
+// Проверка RSS через существующую кнопку «Проба» в админке.
+export async function probe() {
+  const results = [];
+
+  for (const feed of FEEDS) {
+    try {
+      const result = await fetchFeed(feed);
+
+      results.push({
+        publisher: feed.publisher,
+        url: feed.url,
+        status: 'ok',
+        items: result.stories.length,
+        sample: result.stories.slice(0, 3).map((story) => ({
+          title: story.title,
+          pubDate: story.pubDate,
+          link: story.link
+        }))
+      });
+    } catch (error) {
+      results.push({
+        publisher: feed.publisher,
+        url: feed.url,
+        status: 'error',
+        error: error.message
+      });
+    }
+  }
+
+  return {
+    source: 'Presseportal RSS',
+    feeds: results
+  };
 }
