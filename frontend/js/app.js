@@ -541,8 +541,14 @@
         lagMs != null && lagMs > 60000 ? el('span', { class: 'tl-lag', text: t('lagPub', { d: fmtDur(lagMs) }) }) : null));
     } else rows.push(tlRow(t('tPublished'), t('tPubUnknown'), true));
 
+    // «Действует с / до» — срок действия меры или предупреждения (не время происшествия)
+    if (ev.valid_from) {
+      rows.push(tlRow(t('tValidFrom'), ev.valid_from_precision === 'day' ? t('tDayOnly', { date: fmtD(ev.valid_from) }) : withRel(ev.valid_from)));
+    }
     // «Действует до» только там, где это настоящая дата окончания; у пресс-релизов срок хранения — не срок действия
-    if (ev.expires_at && END_DATE_SOURCES.has(ev.source)) rows.push(tlRow(t('tExpires'), withRel(ev.expires_at)));
+    if (ev.valid_until_precision === 'open') rows.push(tlRow(t('tExpires'), t('tUntilFurther')));
+    else if (ev.valid_until) rows.push(tlRow(t('tExpires'), ev.valid_until_precision === 'day' ? t('tDayOnly', { date: fmtD(ev.valid_until) }) : withRel(ev.valid_until)));
+    else if (ev.expires_at && END_DATE_SOURCES.has(ev.source)) rows.push(tlRow(t('tExpires'), withRel(ev.expires_at)));
     rows.push(tlRow(t('tReceived'), withRel(ev.received_at)));
     if (Math.abs(Date.parse(ev.updated_at) - Date.parse(ev.received_at)) > 60000) rows.push(tlRow(t('tUpdated'), withRel(ev.updated_at)));
     $('#dTimes').replaceChildren(...rows);
