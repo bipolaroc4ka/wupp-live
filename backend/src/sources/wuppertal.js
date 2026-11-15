@@ -928,8 +928,14 @@ async function toEvent(ctx, item, analysis) {
 
     district: hasGeo ? geo.district || null : null,
 
-    event_time: start ? ISO(start.getTime()) : null,
-    time_precision: start ? 'day' : 'unknown',
+    // «ab Montag, 16. November» / «bis Ende Dezember» — срок действия ограничения, а не время происшествия:
+    // «Произошло» у пресс-сообщений города остаётся неизвестным, срок идёт в «Действует с / до».
+    event_time: null,
+    time_precision: 'unknown',
+    valid_from: start ? ISO(start.getTime()) : null,
+    valid_from_precision: start ? 'day' : null,
+    valid_until: end ? ISO(end.getTime()) : null,
+    valid_until_precision: end ? 'day' : null,
 
     published_at: publishedAt,
     expires_at: ISO(expiresAt),
