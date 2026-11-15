@@ -56,8 +56,6 @@ ALLOWED_ORIGINS = "https://bipolaroc4ka.github.io"
 # Контакт для Nominatim.
 NOMINATIM_CONTACT = "isychev10@gmail.com"
 
-# Presseportal Newsroom IDs.
-PRESSEPORTAL_OFFICE_IDS = "115885"
 
 # Время жизни пресс-релизов в часах.
 PRESS_TTL_HOURS = "12"
