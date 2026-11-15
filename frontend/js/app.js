@@ -211,7 +211,7 @@
   }
   function isLongTerm(ev) {
     const a = ageDays(ev);
-    return ev.status === 'ACTIVE' && a != null && a >= LONG_TERM_DAYS;
+    return ev.status === 'ACTIVE' && a != null && a >= LONG_TERM_DAYS && !ev.expires_at && !ev.valid_until;
   }
   const RANK = { LIVE: 0, ACTIVE: 1, RECENT: 2, EXPIRED: 3, RESOLVED: 4 };
   function sortTs(ev) { return Date.parse(eventTimeRef(ev) || ev.published_at || ev.received_at) || 0; }
@@ -518,7 +518,7 @@
     if (isLongTerm(ev)) {
       note.textContent = t('longDetail', { n: String(Math.floor(ageDays(ev))), date: fmtDY(ev.event_time) });
       note.hidden = false;
-    } else if (ev.source === 'autobahn' && ev.status === 'ACTIVE') {
+    } else if (ev.source === 'autobahn' && ev.status === 'ACTIVE' && !ev.expires_at && !ev.valid_until) {
       note.textContent = t('endUnknown');
       note.hidden = false;
     } else { note.textContent = ''; note.hidden = true; }
