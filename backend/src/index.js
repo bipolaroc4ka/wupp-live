@@ -107,6 +107,10 @@ function publicEvent(r, tr) {
     confidence: r.confidence,
     is_verified: !!r.is_verified,
     expires_at: r.expires_at,
+    valid_from: r.valid_from || null,
+    valid_until: r.valid_until || null,
+    valid_from_precision: r.valid_from_precision || null,
+    valid_until_precision: r.valid_until_precision || null,
     severity: r.severity,
     // машинный перевод на русский (если есть и текст источника не менялся): оригинал не заменяется
     title_ru: tr ? tr.title : null,
