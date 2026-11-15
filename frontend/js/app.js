@@ -211,7 +211,7 @@
   }
   function isLongTerm(ev) {
     const a = ageDays(ev);
-    return ev.status === 'ACTIVE' && a != null && a >= LONG_TERM_DAYS && !ev.expires_at && !ev.valid_until;
+    return ev.status === 'ACTIVE' && a != null && a >= LONG_TERM_DAYS;
   }
   const RANK = { LIVE: 0, ACTIVE: 1, RECENT: 2, EXPIRED: 3, RESOLVED: 4 };
   function sortTs(ev) { return Date.parse(eventTimeRef(ev) || ev.published_at || ev.received_at) || 0; }
@@ -515,10 +515,11 @@
 
     // Срок действия: честно говорим, что даты окончания у нас нет, а не делаем вид, что событие актуально
     const note = $('#dNote');
-    if (isLongTerm(ev)) {
+    const hasEnd = !!(ev.expires_at || ev.valid_until);
+    if (isLongTerm(ev) && !hasEnd) {
       note.textContent = t('longDetail', { n: String(Math.floor(ageDays(ev))), date: fmtDY(ev.event_time) });
       note.hidden = false;
-    } else if (ev.source === 'autobahn' && ev.status === 'ACTIVE' && !ev.expires_at && !ev.valid_until) {
+    } else if (ev.source === 'autobahn' && ev.status === 'ACTIVE' && !hasEnd) {
       note.textContent = t('endUnknown');
       note.hidden = false;
     } else { note.textContent = ''; note.hidden = true; }
