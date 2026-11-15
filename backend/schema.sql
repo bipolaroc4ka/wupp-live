@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS events (
   severity         TEXT,
   content_hash     TEXT NOT NULL,
   geocode_attempts INTEGER NOT NULL DEFAULT 0,
-  miss_count       INTEGER NOT NULL DEFAULT 0       -- сколько раз подряд записи не было в ленте
+  miss_count       INTEGER NOT NULL DEFAULT 0,      -- сколько раз подряд записи не было в ленте
+  valid_from       TEXT,                            -- начало действия меры/предупреждения (не время происшествия)
+  valid_until      TEXT,                            -- конец действия, если назван в тексте
+  valid_from_precision  TEXT,                       -- 'minute' | 'day'
+  valid_until_precision TEXT                        -- 'minute' | 'day' | 'open' (до отмены, без даты)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_city_status ON events (city_id, status, updated_at);
