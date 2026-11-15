@@ -125,7 +125,18 @@ function normalizeFeedItem(item, feed) {
   if (!id) return null;
   return { ...item, id, feed };
 }
+// Стабильный ключ предупреждения NINA.
+// NINA публикует новую версию предупреждения при изменении его содержимого.
+function keyOf(w) {
+  if (!w || typeof w !== 'object') return '';
 
+  const id = String(w.id || w.identifier || '').trim();
+  if (!id) return '';
+
+  const version = w.version == null ? '0' : String(w.version).trim();
+
+  return JSON.stringify([id, version]);
+}
 // --------------------------------------------------
 // Геометрия (GeoJSON, координаты [lon, lat])
 // --------------------------------------------------
