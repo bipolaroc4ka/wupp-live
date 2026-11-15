@@ -519,6 +519,8 @@ function buildDescription(info, areaNames, extra) {
   const parts = [];
   const description = cleanText(info.description).replace(/^Es folgt eine (?:wichtige )?(?:Information|Mitteilung|Meldung|Warnung)[^\n.]*\.\s*/i, '');
   const instruction = cleanText(info.instruction);
+  const facts = textFacts(`${cleanText(info.headline)} ${description}`);
+  if (facts.length) parts.push(facts.join('\n'));
   if (description) parts.push(truncateText(description, 2200));
   if (instruction && instruction !== description) parts.push(`Handlungsempfehlung: ${truncateText(instruction, 600)}`);
   if (areaNames.length) {
@@ -545,6 +547,26 @@ function minimalItem(raw) {
     source_event_id: raw.id, content_key: keyOf(raw), title, category: classify(title, raw.feed),
     status: 'ACTIVE', geo_precision: 'none', is_verified: 1
   };
+}
+
+// Ключевые сроки, названные в тексте, — отдельными строками в начале описания («Beginn: ab 22:00 Uhr»,
+// «Dauer: bis auf Weiteres …»). Берём формулировку как в источнике; дату не достраиваем.
+export function textFacts(text) {
+  const t = String(text || '').replace(/\s+/g, ' ');
+  const out = [];
+  const st = /\bab\s+(?:dem\s+)?((?:\d{1,2}\.\d{1,2}\.(?:\d{2,4})?)?(?:\s*(?:um|,)?\s*)?(?:\d{1,2}(?::\d{2})?\s*Uhr)?)/i.exec(t);
+  if (st && st[1] && st[1].trim() && /\d/.test(st[1])) {
+    const when = st[1].replace(/\s+/g, ' ').trim();
+    out.push(`Beginn: ab ${when}${/\d{1,2}\.\d{1,2}\./.test(when) ? '' : ' (Datum im Text nicht genannt)'}`);
+  }
+  const dur = [];
+  if (/\bbis auf Weiteres\b/i.test(t)) dur.push('bis auf Weiteres');
+  const ent = /\bbis zur\s+((?:\S+\s+)?Entwarnung(?:\s+durch\s+(?:das|die|den)\s+[^.,;]+?)?)(?=[.,;]|\s+Die\b|\s+Das\b|$)/i.exec(t);
+  if (ent) dur.push(`bis zur ${ent[1].trim()}`);
+  const until = /\bbis(?:\s+(?:zum|einschließlich))?\s+(\d{1,2}\.\d{1,2}\.(?:\d{2,4})?(?:\s*,?\s*(?:um\s+)?\d{1,2}(?::\d{2})?\s*Uhr)?)/i.exec(t);
+  if (until) dur.push(`bis ${until[1].trim()}`);
+  if (dur.length) out.push(`Dauer: ${dur.join(', ')}`);
+  return out;
 }
 
 // CAP «references»: «sender,identifier,sent sender,identifier,sent …» — предыдущие версии, которые заменяет это сообщение.
