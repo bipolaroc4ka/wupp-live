@@ -27,7 +27,10 @@ export const meta = {
 const MAX_AGE_DAYS = 7;
 const MAX_ITEMS_PER_FEED = 40;
 const MAX_XML_CHARS = 2_000_000;
-const DESCRIPTION_LIMIT = 900;
+const DESCRIPTION_LIMIT = 900;        // для короткого текста из ленты
+const FULLTEXT_LIMIT = 3500;          // для полного текста релиза
+const FULLTEXT_PER_RUN = 6;           // страниц релизов за запуск (лимит Workers Free — 50 подзапросов)
+const MAX_PAGE_CHARS = 1_500_000;
 
 const FEEDS = [
   { id: '115885', publisher: 'Feuerwehr Wuppertal', type: 'fire', url: 'https://www.presseportal.de/rss/dienststelle_115885.rss2' },
@@ -79,7 +82,9 @@ function parseRss(xml) {
   for (const match of String(xml || '').matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)) {
     const x = match[1];
     const title = cleanHtml(getTag(x, 'title'));
-    const description = cleanHtml(getTag(x, 'description') || getTag(x, 'content:encoded'));
+    // В ленте бывает и анонс (description), и полный текст (content:encoded): берём более длинный
+    const d1 = cleanHtml(getTag(x, 'description')), d2 = cleanHtml(getTag(x, 'content:encoded'));
+    const description = d2.length > d1.length ? d2 : d1;
     const link = getTag(x, 'link');
     const guid = getTag(x, 'guid');
     const pubDate = getTag(x, 'pubDate') || getTag(x, 'dc:date');
@@ -165,19 +170,70 @@ function toItem(story, feed, nowMs, ttlMs) {
     expires_at: new Date(expiresMs).toISOString() // стабильный: от публикации, а не от «сейчас»
   };
 
-  if (street) {
-    item.enrich = async (ctx) => {
-      const g = await geocodeStreet(ctx, street);
-      if (!g) { item.geocode_attempts = 1; return; }
-      if (g.pending) return; // позже повторит retryGeocoding
-      item.geo_precision = g.precision;
-      item.district = g.district || null;
-      item.confidence = 0.6;
-      if (g.precision === 'street') { item.latitude = g.lat; item.longitude = g.lon; }
-      // district: координаты не сохраняем — на карте рисуется только приблизительная область района
-    };
-  }
+  item.enrich = async (ctx) => {
+    let street2 = street;
+    if (isTeaser(clean) && (ctx.fullTextBudget ??= FULLTEXT_PER_RUN) > 0 && item.source_url !== 'https://www.presseportal.de/') {
+      ctx.fullTextBudget -= 1;
+      try {
+        const full = (await fetchArticleText(item.source_url)) || '';
+        const fullClean = full.replace(DATELINE_RE, '').trim();
+        if (fullClean.length > clean.length) {
+          item.description = truncate(fullClean, FULLTEXT_LIMIT);
+          // в полном тексте могут оказаться улица и время, которых не было в анонсе
+          const t2 = parseEventTime(`${title0}. ${full}`, published);
+          if (t2.ms != null && (item.event_time == null || t2.precision === 'minute')) {
+            item.event_time = new Date(t2.ms).toISOString(); item.time_precision = t2.precision;
+          }
+          if (!street2) {
+            street2 = extractStreet(`${title0}. ${full}`);
+            item.location_name = street2;
+          }
+        }
+      } catch (e) { ctx.log(`presseportal fulltext: ${e.message}`); }
+    }
+    if (!street2) return;
+    const g = await geocodeStreet(ctx, street2);
+    if (!g) { item.geocode_attempts = 1; return; }
+    if (g.pending) return; // позже повторит retryGeocoding
+    item.geo_precision = g.precision;
+    item.district = g.district || null;
+    item.confidence = 0.6;
+    if (g.precision === 'street') { item.latitude = g.lat; item.longitude = g.lon; }
+    // district: координаты не сохраняем — на карте рисуется только приблизительная область района
+  };
   return item;
+}
+
+// ---------- полный текст релиза ----------
+// В RSS приходит анонс, обрезанный на «...». Полный текст берём со страницы релиза (schema.org articleBody в JSON-LD),
+// только для новых записей и в пределах бюджета запросов. Не получилось — остаётся анонс из ленты.
+const isTeaser = (text) => /(?:\.\.\.|…)\s*$/.test(String(text || ''));
+
+export function articleBodyFromHtml(html) {
+  const page = String(html || '');
+  for (const m of page.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let data;
+    try { data = JSON.parse(m[1].trim()); } catch { continue; }
+    const stack = Array.isArray(data) ? [...data] : [data];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || typeof node !== 'object') continue;
+      if (typeof node.articleBody === 'string' && node.articleBody.trim().length > 80) return cleanHtml(node.articleBody);
+      for (const v of Object.values(node)) if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return null;
+}
+
+async function fetchArticleText(url) {
+  const res = await fetchWithRetry(url, {
+    headers: { accept: 'text/html,*/*;q=0.5', 'user-agent': 'WuppertalLive/1.0 (+https://github.com/bipolaroc4ka/wupp-live)' },
+    timeoutMs: 8000, retries: 0
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+  if (html.length > MAX_PAGE_CHARS) return null;
+  return articleBodyFromHtml(html);
 }
 
 // ---------- загрузка ----------
@@ -222,6 +278,14 @@ export async function run(ctx) {
   return syncSource(ctx, meta.id, items, { resolveMissing: false });
 }
 
+async function probeFullText(story) {
+  if (!story) return null;
+  try {
+    const t = await fetchArticleText(safeStoryUrl(story.link, story.id));
+    return { url: safeStoryUrl(story.link, story.id), found: !!t, chars: t ? t.length : 0, rss_chars: story.description.length, head: t ? t.slice(0, 200) : null };
+  } catch (e) { return { error: e.message }; }
+}
+
 // Проверка через «Проба» в админке.
 export async function probe() {
   const feeds = [];
@@ -232,7 +296,9 @@ export async function probe() {
         publisher: feed.publisher, url: feed.url, status: 'ok', items: stories.length,
         datelines: stories.slice(0, 10).map((s) => dateline(s.description)),
         sample: stories.slice(0, 3).map((s) => ({ title: s.title, pubDate: s.pubDate, link: s.link, description: s.description.slice(0, 200) })),
-        raw_head: xml.slice(0, 600)
+        raw_head: xml.slice(0, 600),
+        teaser_like: stories.slice(0, 5).map((s) => isTeaser(s.description)),
+        fulltext_check: await probeFullText(stories[0])
       });
     } catch (e) { feeds.push({ publisher: feed.publisher, url: feed.url, status: 'error', error: e.message }); }
   }
