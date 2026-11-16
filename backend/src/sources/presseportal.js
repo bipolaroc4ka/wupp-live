@@ -157,16 +157,23 @@ function districtFromDateline(line) {
   return m ? canonDistrict(m[1].trim()) : null;
 }
 
-const normalizeTitle = (t) => String(t || '').replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*/i, '').trim();
+// Заголовки: «FW-W: …», «POL-W: W …» (Wuppertal), «POL-W: SG …» (Solingen), «POL-W: RS …» (Remscheid).
+// Полицейская лента Wuppertal объединяет три города, код города стоит после «POL-W:». В заголовке карточки он не нужен.
+const POL_CODE_RE = /^POL-W\s*(?:\(\d+\))?\s*:\s*(W|SG|RS)(?![\p{L}])/iu;
+const normalizeTitle = (t) => String(t || '')
+  .replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*(?:(?:W|SG|RS)(?![\p{L}])[\s:–-]*)?/iu, '')
+  .trim();
 
 // Относится ли релиз к городу Wuppertal.
 function isWuppertal(line, title, body, feedType) {
   if (line) return /^wuppertal\b/i.test(line) || districtFromDateline(line) !== null;
-  // Без дата-строки город может вообще не упоминаться (релиз называет только улицу). Тогда решает префикс заголовка:
-  // «POL-W» / «FW-W» — Wuppertal, «POL-RS» / «POL-SG» — Remscheid / Solingen. Лента пожарной службы целиком
-  // относится к Wuppertal, поэтому без признаков другого города релиз принимается.
-  if (/^(?:POL|FW)-W\b/i.test(title)) return true;
+  // Без дата-строки город может вообще не упоминаться (релиз называет только улицу). Тогда решает код в заголовке:
+  // «POL-W: W …» — Wuppertal, «POL-W: SG …» / «POL-W: RS …» (и старые «POL-SG» / «POL-RS») — Solingen / Remscheid.
+  // «FW-W» — пожарная служба Wuppertal. Лента пожарных целиком относится к Wuppertal.
+  const code = POL_CODE_RE.exec(title);
+  if (code) return code[1].toUpperCase() === 'W';
   if (/^(?:POL|FW)-(?:RS|SG)\b/i.test(title)) return false;
+  if (/^FW-W\b/i.test(title)) return true;
   const head = `${title} ${body.slice(0, 160)}`;
   if (feedType === 'police') return (/wuppertal/i.test(head) || extractDistrict(head) !== null) && !/remscheid|solingen/i.test(head);
   return !/remscheid|solingen/i.test(head);
