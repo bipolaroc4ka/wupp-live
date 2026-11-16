@@ -77,6 +77,15 @@ function cleanHtml(value) {
     .replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Служебные хвосты анонса в ленте: «Lesen Sie hier weiter...» и «Original-Content von: …, übermittelt durch news aktuell».
+function stripBoilerplate(text) {
+  return String(text || '')
+    .replace(/\s*Lesen Sie hier weiter\s*(?:\.{3}|…)?/gi, '')
+    .replace(/\s*Original-Content von:[^\n]*/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function parseRss(xml) {
   const items = [];
   for (const match of String(xml || '').matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)) {
@@ -84,7 +93,7 @@ function parseRss(xml) {
     const title = cleanHtml(getTag(x, 'title'));
     // В ленте бывает и анонс (description), и полный текст (content:encoded): берём более длинный
     const d1 = cleanHtml(getTag(x, 'description')), d2 = cleanHtml(getTag(x, 'content:encoded'));
-    const description = d2.length > d1.length ? d2 : d1;
+    const description = stripBoilerplate(d2.length > d1.length ? d2 : d1);
     const link = getTag(x, 'link');
     const guid = getTag(x, 'guid');
     const pubDate = getTag(x, 'pubDate') || getTag(x, 'dc:date');
