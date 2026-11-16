@@ -9,7 +9,7 @@ import { translateStructured } from './structured.js';
 const MODEL = '@cf/meta/m2m100-1.2b';           // запасной движок: маленькая модель-переводчик
 const DEFAULT_LLM = '@cf/google/gemma-3-12b-it'; // языковая модель Workers AI (можно заменить переменной TRANSLATE_MODEL)
 const CHUNK = 400;
-const MAX_DESC = 1600;
+const MAX_DESC = 3600;
 const PER_RUN = 6;
 const SCAN_LIMIT = 500;
 
