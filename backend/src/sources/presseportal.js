@@ -130,36 +130,68 @@ function classify(text, publisher) {
   return 'emergency_other';
 }
 
+// Районы Wuppertal: в дата-строке релиза бывает не «Wuppertal», а район («Barmen (ots)», «Wuppertal-Vohwinkel (ots)»).
+const DISTRICT_NAMES = ['Oberbarmen', 'Unterbarmen', 'Barmen', 'Wichlinghausen', 'Heckinghausen', 'Nächstebreck', 'Langerfeld', 'Beyenburg',
+  'Elberfeld', 'Sonnborn', 'Uellendahl', 'Katernberg', 'Ronsdorf', 'Cronenberg', 'Küllenhahn', 'Vohwinkel', 'Dönberg', 'Langenfeld',
+  'Hahnerberg', 'Arrenberg', 'Ölberg', 'Hatzfeld', 'Varresbeck', 'Nordstadt', 'Südstadt'];
+// Названия, совпадающие с другими городами или словами: считаются районом только с «Wuppertal-» / «Ortsteil» / «Stadtteil»
+const AMBIGUOUS_DISTRICTS = new Set(['Langenfeld', 'Hatzfeld', 'Nordstadt', 'Südstadt', 'Katernberg']);
+const DISTRICT_RE = new RegExp(`(?<![\\p{L}-])(Wuppertal[- ]\\s?)?(${DISTRICT_NAMES.join('|')})(?![\\p{L}])`, 'giu');
+const canonDistrict = (name) => DISTRICT_NAMES.find((d) => d.toLowerCase() === String(name).toLowerCase()) || null;
+
+// Район из текста: самое раннее надёжное упоминание или null.
+export function extractDistrict(text) {
+  const t = String(text || '');
+  for (const m of t.matchAll(DISTRICT_RE)) {
+    const name = canonDistrict(m[2]);
+    if (!name) continue;
+    if (AMBIGUOUS_DISTRICTS.has(name) && !m[1] && !/(?:Ortsteil|Stadtteil|Quartier)\s+$/i.test(t.slice(Math.max(0, m.index - 14), m.index))) continue;
+    return name;
+  }
+  return null;
+}
+
+// Район из дата-строки: «Barmen», «Wuppertal-Vohwinkel», «Wuppertal / Elberfeld».
+function districtFromDateline(line) {
+  const m = /^(?:Wuppertal\s*[-\/–]?\s*)?(\S.*)$/i.exec(String(line || '').trim());
+  return m ? canonDistrict(m[1].trim()) : null;
+}
+
 const normalizeTitle = (t) => String(t || '').replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*/i, '').trim();
 
 // Относится ли релиз к городу Wuppertal.
 function isWuppertal(line, title, body, feedType) {
-  if (line) return /^wuppertal\b/i.test(line);
+  if (line) return /^wuppertal\b/i.test(line) || districtFromDateline(line) !== null;
   // Без датастроки: у пожарной ленты достаточно упоминания города; у полицейской — упоминание в начале
   // и отсутствие соседних городов в первой части текста.
   const head = `${title} ${body.slice(0, 160)}`;
-  if (feedType === 'police') return /wuppertal/i.test(head) && !/remscheid|solingen/i.test(head);
-  return /wuppertal/i.test(`${title} ${body}`);
+  const mentions = (t) => /wuppertal/i.test(t) || extractDistrict(t) !== null;
+  if (feedType === 'police') return mentions(head) && !/remscheid|solingen/i.test(head);
+  return mentions(`${title} ${body}`);
 }
 
-function toItem(story, feed, nowMs, ttlMs) {
+function toItem(story, feed, nowMs, ttlMs, rejects = null) {
+  const no = (reason) => { if (rejects) rejects[reason] = (rejects[reason] || 0) + 1; return null; };
   const title0 = String(story.title || '').trim();
   const body = String(story.description || '').trim();
   const published = Date.parse(story.pubDate);
-  if (!story.id || !title0 || !Number.isFinite(published)) return null; // без времени публикации не показываем
-  if (published > nowMs + 10 * 60 * 1000) return null;                    // публикации «из будущего»
-  if (nowMs - published > MAX_AGE_DAYS * 24 * 3600e3) return null;
+  if (!story.id || !title0 || !Number.isFinite(published)) return no('без даты публикации'); // без времени публикации не показываем
+  if (published > nowMs + 10 * 60 * 1000) return no('дата из будущего');
+  if (nowMs - published > MAX_AGE_DAYS * 24 * 3600e3) return no('старше 7 дней');
 
   const expiresMs = published + ttlMs;
-  if (nowMs >= expiresMs) return null; // просроченное не сохраняем: статус не должен «мигать»
+  if (nowMs >= expiresMs) return no(`старше TTL (${Math.round(ttlMs / 3600e3)} ч)`); // просроченное не сохраняем: статус не должен «мигать»
 
-  if (!isWuppertal(dateline(body), title0, body, feed.type)) return null;
+  const line0 = dateline(body);
+  if (!isWuppertal(line0, title0, body, feed.type)) return no(`не Wuppertal (${line0 || 'без дата-строки'})`);
 
   const title = normalizeTitle(title0) || title0;
   const clean = body.replace(DATELINE_RE, '').trim();
   const eventText = `${title0}. ${body}`;
   const et = parseEventTime(eventText, published);
   const street = extractStreet(eventText);
+  // Район: из дата-строки («Barmen (ots)»), иначе из заголовка/текста. Если улицы нет, место = район.
+  const districtName = districtFromDateline(line0) || extractDistrict(`${title0}. ${body}`);
 
   const item = {
     source_event_id: `${feed.id}:${story.id}`, // префикс исключает коллизии между лентами
@@ -168,8 +200,9 @@ function toItem(story, feed, nowMs, ttlMs) {
     description: truncate(clean, DESCRIPTION_LIMIT) || null,
     category: classify(`${title0} ${body}`, feed.type),
     source_url: safeStoryUrl(story.link, story.id),
-    geo_precision: 'none',
-    location_name: street,
+    geo_precision: !street && districtName ? 'district' : 'none',
+    district: !street && districtName ? districtName : null,
+    location_name: street || districtName || null,
     event_time: et.ms != null ? new Date(et.ms).toISOString() : null,
     time_precision: et.precision,
     published_at: new Date(published).toISOString(),
@@ -198,17 +231,21 @@ function toItem(story, feed, nowMs, ttlMs) {
           }
           if (!street2) {
             street2 = extractStreet(`${title0}. ${full}`);
-            item.location_name = street2;
+            if (street2) item.location_name = street2;
           }
         }
       } catch (e) { ctx.log(`presseportal fulltext: ${e.message}`); }
     }
     if (!street2) return;
     const g = await geocodeStreet(ctx, street2);
-    if (!g) { item.geocode_attempts = 1; return; }
+    if (!g) {
+      item.geocode_attempts = 1;
+      if (districtName) { item.geo_precision = 'district'; item.district = districtName; } // улицу не нашли, район известен из текста
+      return;
+    }
     if (g.pending) return; // позже повторит retryGeocoding
     item.geo_precision = g.precision;
-    item.district = g.district || null;
+    item.district = g.district || districtName || null;
     item.confidence = 0.6;
     if (g.precision === 'street') { item.latitude = g.lat; item.longitude = g.lon; }
     // district: координаты не сохраняем — на карте рисуется только приблизительная область района
@@ -306,7 +343,7 @@ async function fetchFeed(feed) {
 }
 
 export async function run(ctx) {
-  const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 12) * 3600e3;
+  const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 48) * 3600e3;
   const items = [];
   let ok = 0, lastErr = null;
 
@@ -315,11 +352,12 @@ export async function run(ctx) {
       const { stories } = await fetchFeed(feed);
       ok += 1;
       let accepted = 0;
+      const rejects = {};
       for (const story of stories) {
-        const it = toItem(story, feed, ctx.now, ttlMs);
+        const it = toItem(story, feed, ctx.now, ttlMs, rejects);
         if (it) { items.push(it); accepted += 1; }
       }
-      ctx.log(`presseportal ${feed.type}: RSS items=${stories.length}, accepted=${accepted}`);
+      ctx.log(`presseportal ${feed.type}: RSS items=${stories.length}, accepted=${accepted}, отброшено: ${JSON.stringify(rejects)}`);
     } catch (e) {
       lastErr = e;
       ctx.log(`presseportal ${feed.type}: ${e.message}`);
@@ -340,14 +378,23 @@ async function probeFullText(story) {
 }
 
 // Проверка через «Проба» в админке.
-export async function probe() {
+export async function probe(ctx) {
+  const ttlMs = Math.max(1, parseFloat(ctx?.env?.PRESS_TTL_HOURS) || 48) * 3600e3;
   const feeds = [];
   for (const feed of FEEDS) {
     try {
       const { xml, stories } = await fetchFeed(feed);
       feeds.push({
         publisher: feed.publisher, url: feed.url, status: 'ok', items: stories.length,
-        datelines: stories.slice(0, 10).map((s) => dateline(s.description)),
+        datelines: stories.slice(0, 15).map((s) => dateline(s.description)),
+        // что стало с каждым релизом: принят или причина отказа (и найденные улица/район)
+        decisions: stories.map((st) => {
+          const rej = {};
+          const it = toItem(st, feed, Date.now(), ttlMs, rej);
+          return it
+            ? { title: st.title.slice(0, 70), accepted: true, location: it.location_name, geo: it.geo_precision }
+            : { title: st.title.slice(0, 70), accepted: false, reason: Object.keys(rej)[0] || '?' };
+        }),
         sample: stories.slice(0, 3).map((s) => ({ title: s.title, pubDate: s.pubDate, link: s.link, description: s.description.slice(0, 200) })),
         raw_head: xml.slice(0, 600),
         teaser_like: stories.slice(0, 5).map((s) => isTeaser(s.description)),
