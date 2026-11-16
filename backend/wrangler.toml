@@ -41,7 +41,7 @@ NOMINATIM_CONTACT = "isychev10@gmail.com"
 # Presseportal читается из публичных RSS-лент (Feuerwehr и Polizei Wuppertal): ключ и ID не нужны.
 
 # Через сколько часов пресс-релиз перестаёт считаться «недавним» (RECENT -> EXPIRED).
-PRESS_TTL_HOURS = "12"
+PRESS_TTL_HOURS = "48"
 
 # Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
 AUTOBAHN_ROADS = "A1,A46,A535,A43"
