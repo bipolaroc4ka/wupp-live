@@ -22,6 +22,10 @@ const RE_COMPOUND = new RegExp(`\\b([A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ]?[a-
 const RE_ABBR = /\b([A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ]?[a-zäöüß]+)*str\.)/;
 const RE_TWO = /\b([A-ZÄÖÜ][a-zäöüß]+(?:er|en|e)?)\s+(Straße|Strasse|Str\.|Weg|Allee|Platz|Ufer|Gasse|Ring|Damm|Brücke)\b/;
 
+// «an der Straße Köttershöhe», «auf der Straße Am Stadion»: название идёт после слова «Straße»
+const RE_STRASSE_NAME = /\b(?:an|auf|in|von|bei)\s+(?:der|dem)\s+Straße\s+((?:Am|An|Auf|Im|Zum|Zur|Unter|Obere?|Untere?)?\s?[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ]?[a-zäöüß]+)*)/;
+const STRASSE_NAME_STOP = new Set(['Richtung', 'Höhe', 'Nähe', 'Ecke', 'Mitte', 'Wuppertal', 'Ortsteil', 'Kreuzung', 'Einmündung', 'Im', 'In']);
+
 const NOT_STREETS = new Set(['Autobahn', 'Bundesstraße', 'Landstraße', 'Straße', 'Schnellstraße', 'Hauptstraße']);
 
 // Возвращает название улицы (без номера дома) или null.
@@ -32,6 +36,8 @@ export function extractStreet(text) {
     const m = text.match(re);
     if (m) cands.push({ idx: m.index, street: re === RE_TWO ? `${m[1]} ${m[2]}` : m[1] });
   }
+  const sn = text.match(RE_STRASSE_NAME);
+  if (sn && !STRASSE_NAME_STOP.has(sn[1].trim())) cands.push({ idx: sn.index, street: sn[1].trim() });
   cands.sort((a, b) => a.idx - b.idx);
   for (const c of cands) {
     let s = c.street.replace(/\bStr\.$/, 'Straße').replace(/str\.$/, 'straße');
