@@ -162,12 +162,14 @@ const normalizeTitle = (t) => String(t || '').replace(/^(?:FW|POL)-[A-Z]+\s*(?:\
 // Относится ли релиз к городу Wuppertal.
 function isWuppertal(line, title, body, feedType) {
   if (line) return /^wuppertal\b/i.test(line) || districtFromDateline(line) !== null;
-  // Без датастроки: у пожарной ленты достаточно упоминания города; у полицейской — упоминание в начале
-  // и отсутствие соседних городов в первой части текста.
+  // Без дата-строки город может вообще не упоминаться (релиз называет только улицу). Тогда решает префикс заголовка:
+  // «POL-W» / «FW-W» — Wuppertal, «POL-RS» / «POL-SG» — Remscheid / Solingen. Лента пожарной службы целиком
+  // относится к Wuppertal, поэтому без признаков другого города релиз принимается.
+  if (/^(?:POL|FW)-W\b/i.test(title)) return true;
+  if (/^(?:POL|FW)-(?:RS|SG)\b/i.test(title)) return false;
   const head = `${title} ${body.slice(0, 160)}`;
-  const mentions = (t) => /wuppertal/i.test(t) || extractDistrict(t) !== null;
-  if (feedType === 'police') return mentions(head) && !/remscheid|solingen/i.test(head);
-  return mentions(`${title} ${body}`);
+  if (feedType === 'police') return (/wuppertal/i.test(head) || extractDistrict(head) !== null) && !/remscheid|solingen/i.test(head);
+  return !/remscheid|solingen/i.test(head);
 }
 
 function toItem(story, feed, nowMs, ttlMs, rejects = null) {
