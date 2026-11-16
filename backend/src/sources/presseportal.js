@@ -184,7 +184,9 @@ function toItem(story, feed, nowMs, ttlMs) {
     if (isTeaser(clean) && (ctx.fullTextBudget ??= FULLTEXT_PER_RUN) > 0 && item.source_url !== 'https://www.presseportal.de/') {
       ctx.fullTextBudget -= 1;
       try {
-        const full = (await fetchArticleText(item.source_url)) || '';
+        const { text: got, diag } = await fetchArticle(item.source_url, clean);
+        const full = got || '';
+        if (!got) ctx.log(`presseportal fulltext: не найден (${JSON.stringify(diag)})`);
         const fullClean = full.replace(DATELINE_RE, '').trim();
         if (fullClean.length > clean.length) {
           item.description = truncate(fullClean, FULLTEXT_LIMIT);
@@ -218,8 +220,10 @@ function toItem(story, feed, nowMs, ttlMs) {
 // только для новых записей и в пределах бюджета запросов. Не получилось — остаётся анонс из ленты.
 const isTeaser = (text) => /(?:\.\.\.|…)\s*$/.test(String(text || ''));
 
-export function articleBodyFromHtml(html) {
-  const page = String(html || '');
+const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const FOOTER_RE = /^(?:Original-Content von|Rückfragen|Pressekontakt|Presse-?kontakt|Kontakt:|Quelle:|Weitere Meldungen|Diese Meldung)/i;
+
+function articleBodyFromJsonLd(page) {
   for (const m of page.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     let data;
     try { data = JSON.parse(m[1].trim()); } catch { continue; }
@@ -234,15 +238,49 @@ export function articleBodyFromHtml(html) {
   return null;
 }
 
-async function fetchArticleText(url) {
+// Запасной путь без привязки к названиям классов: находим абзац, с которого начинается анонс из ленты,
+// и берём его и следующие абзацы до служебного хвоста («Original-Content von…», контакты).
+function articleBodyFromParagraphs(page, hint) {
+  const key = norm(String(hint || '').replace(DATELINE_RE, '')).slice(0, 40);
+  if (key.length < 20) return null;
+  const clean = page.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ');
+  const paras = [...clean.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)].map((m) => cleanHtml(m[1])).filter(Boolean);
+  const start = paras.findIndex((t) => norm(t).includes(key));
+  if (start < 0) return null;
+  const out = [];
+  for (const t of paras.slice(start, start + 60)) {
+    if (out.length && FOOTER_RE.test(t)) break;
+    out.push(t);
+  }
+  return out.join('\n\n');
+}
+
+export function articleBodyFromHtml(html, hint = '') {
+  const page = String(html || '');
+  return articleBodyFromJsonLd(page) || articleBodyFromParagraphs(page, hint);
+}
+
+// Возвращает { text, diag }: diag нужен для «Пробы» (почему полный текст не найден).
+async function fetchArticle(url, hint = '') {
+  const diag = { url };
   const res = await fetchWithRetry(url, {
-    headers: { accept: 'text/html,*/*;q=0.5', 'user-agent': 'WuppertalLive/1.0 (+https://github.com/bipolaroc4ka/wupp-live)' },
+    headers: {
+      accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
+      'accept-language': 'de-DE,de;q=0.9',
+      'user-agent': 'WuppertalLive/1.0 (+https://github.com/bipolaroc4ka/wupp-live)'
+    },
     timeoutMs: 8000, retries: 0
   });
-  if (!res.ok) return null;
+  diag.status = res.status;
+  if (!res.ok) return { text: null, diag };
   const html = await res.text();
-  if (html.length > MAX_PAGE_CHARS) return null;
-  return articleBodyFromHtml(html);
+  diag.chars = html.length;
+  diag.has_json_ld = /application\/ld\+json/i.test(html);
+  diag.paragraphs = (html.match(/<p\b/gi) || []).length;
+  if (html.length > MAX_PAGE_CHARS) { diag.too_large = true; return { text: null, diag }; }
+  const text = articleBodyFromHtml(html, hint);
+  diag.found = !!text;
+  return { text, diag };
 }
 
 // ---------- загрузка ----------
@@ -290,8 +328,9 @@ export async function run(ctx) {
 async function probeFullText(story) {
   if (!story) return null;
   try {
-    const t = await fetchArticleText(safeStoryUrl(story.link, story.id));
-    return { url: safeStoryUrl(story.link, story.id), found: !!t, chars: t ? t.length : 0, rss_chars: story.description.length, head: t ? t.slice(0, 200) : null };
+    const url = safeStoryUrl(story.link, story.id);
+    const { text, diag } = await fetchArticle(url, story.description);
+    return { ...diag, found: !!text, chars_text: text ? text.length : 0, rss_chars: story.description.length, head: text ? text.slice(0, 200) : null };
   } catch (e) { return { error: e.message }; }
 }
 
