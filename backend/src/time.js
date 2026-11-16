@@ -56,7 +56,7 @@ export function parseEventTime(text, publishedMs) {
   const unknown = { ms: null, precision: 'unknown' };
   if (!text || !Number.isFinite(publishedMs)) return unknown;
   const pub = berlinYMD(publishedMs);
-  let date = null;
+  let date = null, sameWeekday = false;
 
   // 1) Явная дата: 27.09.2026 / 30.08. / 19. September 2026 (точка после месяца обязательна:
   //    иначе «2.5 Tonnen» или «1.3 km» читались бы как даты)
@@ -89,11 +89,12 @@ export function parseEventTime(text, publishedMs) {
         const target = WEEKDAYS[w[1].toLowerCase()];
         const pubWd = new Date(Date.UTC(pub.y, pub.m - 1, pub.d)).getUTCDay();
         const diff = (pubWd - target + 7) % 7;
-        if (diff !== 0) date = addDays(pub, -diff); // тот же день недели — неоднозначно, не угадываем
+        if (diff !== 0) date = addDays(pub, -diff);
+        else sameWeekday = true; // тот же день недели: неоднозначно (сегодня или неделю назад), решает время суток ниже
       }
     }
   }
-  if (!date) return unknown;
+  if (!date && !sameWeekday) return unknown;
 
   // 3) Время суток
   let h = null, mi = 0;
@@ -104,6 +105,12 @@ export function parseEventTime(text, publishedMs) {
     if (t2 && +t2[1] < 24) { h = +t2[1]; mi = 0; }
   }
 
+  // «Am Samstagmittag gegen 13:00 Uhr» в релизе, выпущенном в субботу в 14:47: это сегодня, раз названное время уже прошло.
+  // Без времени суток по-прежнему не угадываем.
+  if (!date) {
+    if (h == null || berlinToUtc(pub.y, pub.m, pub.d, h, mi) > publishedMs) return unknown;
+    date = pub;
+  }
   const ms = berlinToUtc(date.y, date.m, date.d, h ?? 0, mi);
   if (ms > publishedMs + 10 * 60000) return unknown;      // «событие в будущем» — ошибка разбора
   if (ms < publishedMs - 45 * 24 * 3600e3) return unknown; // слишком давно — не уверены
