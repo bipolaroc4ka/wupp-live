@@ -81,6 +81,7 @@ function cleanHtml(value) {
 function stripBoilerplate(text) {
   return String(text || '')
     .replace(/^[^\n]*\[\s*Newsroom\s*\]\s*\n?/i, '') // «Feuerwehr Wuppertal [ Newsroom ]» — ссылка перед текстом
+    .replace(/^\s*\+\+[^\n]*?\+\+\s*(?=\S)/, '') // «++ Заголовок ++» в начале повторяет заголовок; за ним идёт «Wuppertal (ots) - …»
     .replace(/\s*Lesen Sie hier weiter\s*(?:\.{3}|…)?/gi, '')
     .replace(/\s*Original-Content von:[^\n]*/gi, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -166,6 +167,10 @@ const normalizeTitle = (t) => String(t || '')
 
 // Относится ли релиз к городу Wuppertal.
 function isWuppertal(line, title, body, feedType) {
+  // Код города в заголовке главнее дата-строки: у «POL-W: RS …» и «POL-W: SG …» дата-строка тоже «Wuppertal (ots)»
+  // (так отдаёт общая лента Polizei Wuppertal), хотя речь о Remscheid и Solingen.
+  const code0 = POL_CODE_RE.exec(title);
+  if (code0 && code0[1].toUpperCase() !== 'W') return false;
   if (line) return /^wuppertal\b/i.test(line) || districtFromDateline(line) !== null;
   // Без дата-строки город может вообще не упоминаться (релиз называет только улицу). Тогда решает код в заголовке:
   // «POL-W: W …» — Wuppertal, «POL-W: SG …» / «POL-W: RS …» (и старые «POL-SG» / «POL-RS») — Solingen / Remscheid.
@@ -179,10 +184,10 @@ function isWuppertal(line, title, body, feedType) {
   return !/remscheid|solingen/i.test(head);
 }
 
-function toItem(story, feed, nowMs, ttlMs, rejects = null) {
+export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
   const no = (reason) => { if (rejects) rejects[reason] = (rejects[reason] || 0) + 1; return null; };
   const title0 = String(story.title || '').trim();
-  const body = String(story.description || '').trim();
+  const body = stripBoilerplate(String(story.description || '').trim());
   const published = Date.parse(story.pubDate);
   if (!story.id || !title0 || !Number.isFinite(published)) return no('без даты публикации'); // без времени публикации не показываем
   if (published > nowMs + 10 * 60 * 1000) return no('дата из будущего');
@@ -288,6 +293,16 @@ function articleBodyFromJsonLd(page) {
 // Запасной путь без привязки к разметке: страница переводится в текст по строкам, ищется строка с началом анонса
 // и берутся строки до служебного хвоста («Original-Content von…», контакты). Нет хвоста — не берём ничего:
 // иначе в текст попали бы меню и соседние блоки.
+// На странице предложение бывает разбито на несколько строк: строка без конечного знака продолжается следующей.
+function reflow(lines) {
+  const out = [];
+  for (const l of lines) {
+    if (out.length && !/[.!?…:;"“”»)]$/.test(out[out.length - 1])) out[out.length - 1] += ` ${l}`;
+    else out.push(l);
+  }
+  return out.join('\n\n');
+}
+
 function articleBodyFromText(page, hint, diag = null) {
   const key = norm(String(hint || '').replace(DATELINE_RE, '')).slice(0, 40);
   if (key.length < 20) return null;
@@ -302,7 +317,7 @@ function articleBodyFromText(page, hint, diag = null) {
     out.push(l);
   }
   if (diag) { diag.footer_found = closed; diag.window = out.join(' ').slice(0, 300); }
-  return closed ? out.join('\n\n') : null;
+  return closed ? reflow(out) : null;
 }
 
 export function articleBodyFromHtml(html, hint = '', diag = null) {
@@ -352,7 +367,7 @@ async function fetchFeed(feed) {
 }
 
 export async function run(ctx) {
-  const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 48) * 3600e3;
+  const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 168) * 3600e3;
   const items = [];
   let ok = 0, lastErr = null;
 
@@ -388,7 +403,7 @@ async function probeFullText(story) {
 
 // Проверка через «Проба» в админке.
 export async function probe(ctx) {
-  const ttlMs = Math.max(1, parseFloat(ctx?.env?.PRESS_TTL_HOURS) || 48) * 3600e3;
+  const ttlMs = Math.max(1, parseFloat(ctx?.env?.PRESS_TTL_HOURS) || 168) * 3600e3;
   const feeds = [];
   for (const feed of FEEDS) {
     try {
