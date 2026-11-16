@@ -77,9 +77,10 @@ function cleanHtml(value) {
     .replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// Служебные хвосты анонса в ленте: «Lesen Sie hier weiter...» и «Original-Content von: …, übermittelt durch news aktuell».
+// Служебные части анонса в ленте: «… [ Newsroom ]» в начале, «Lesen Sie hier weiter...» и «Original-Content von: …, übermittelt durch news aktuell».
 function stripBoilerplate(text) {
   return String(text || '')
+    .replace(/^[^\n]*\[\s*Newsroom\s*\]\s*\n?/i, '') // «Feuerwehr Wuppertal [ Newsroom ]» — ссылка перед текстом
     .replace(/\s*Lesen Sie hier weiter\s*(?:\.{3}|…)?/gi, '')
     .replace(/\s*Original-Content von:[^\n]*/gi, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -238,26 +239,29 @@ function articleBodyFromJsonLd(page) {
   return null;
 }
 
-// Запасной путь без привязки к названиям классов: находим абзац, с которого начинается анонс из ленты,
-// и берём его и следующие абзацы до служебного хвоста («Original-Content von…», контакты).
-function articleBodyFromParagraphs(page, hint) {
+// Запасной путь без привязки к разметке: страница переводится в текст по строкам, ищется строка с началом анонса
+// и берутся строки до служебного хвоста («Original-Content von…», контакты). Нет хвоста — не берём ничего:
+// иначе в текст попали бы меню и соседние блоки.
+function articleBodyFromText(page, hint, diag = null) {
   const key = norm(String(hint || '').replace(DATELINE_RE, '')).slice(0, 40);
   if (key.length < 20) return null;
-  const clean = page.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ');
-  const paras = [...clean.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)].map((m) => cleanHtml(m[1])).filter(Boolean);
-  const start = paras.findIndex((t) => norm(t).includes(key));
+  const lines = cleanHtml(page).split('\n').map((l) => l.trim()).filter(Boolean);
+  const start = lines.findIndex((l) => norm(l).includes(key));
+  if (diag) diag.key_found = start >= 0;
   if (start < 0) return null;
   const out = [];
-  for (const t of paras.slice(start, start + 60)) {
-    if (out.length && FOOTER_RE.test(t)) break;
-    out.push(t);
+  let closed = false;
+  for (const l of lines.slice(start, start + 80)) {
+    if (out.length && FOOTER_RE.test(l)) { closed = true; break; }
+    out.push(l);
   }
-  return out.join('\n\n');
+  if (diag) { diag.footer_found = closed; diag.window = out.join(' ').slice(0, 300); }
+  return closed ? out.join('\n\n') : null;
 }
 
-export function articleBodyFromHtml(html, hint = '') {
+export function articleBodyFromHtml(html, hint = '', diag = null) {
   const page = String(html || '');
-  return articleBodyFromJsonLd(page) || articleBodyFromParagraphs(page, hint);
+  return articleBodyFromJsonLd(page) || articleBodyFromText(page.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' '), hint, diag);
 }
 
 // Возвращает { text, diag }: diag нужен для «Пробы» (почему полный текст не найден).
@@ -278,7 +282,8 @@ async function fetchArticle(url, hint = '') {
   diag.has_json_ld = /application\/ld\+json/i.test(html);
   diag.paragraphs = (html.match(/<p\b/gi) || []).length;
   if (html.length > MAX_PAGE_CHARS) { diag.too_large = true; return { text: null, diag }; }
-  const text = articleBodyFromHtml(html, hint);
+  diag.ld_types = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => { try { const d = JSON.parse(m[1].trim()); return Array.isArray(d) ? d.map((x) => x['@type']) : (d['@graph'] ? d['@graph'].map((x) => x['@type']) : d['@type']); } catch { return 'invalid'; } });
+  const text = articleBodyFromHtml(html, hint, diag);
   diag.found = !!text;
   return { text, diag };
 }
