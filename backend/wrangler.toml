@@ -43,9 +43,9 @@ NOMINATIM_CONTACT = "isychev10@gmail.com"
 # Через сколько часов пресс-релиз перестаёт считаться «недавним» (RECENT -> EXPIRED).
 PRESS_TTL_HOURS = "168"
 
-# Какие города брать из ленты Polizei Wuppertal (коды как в заголовках «POL-W: W / SG / RS»):
-# W — Wuppertal, SG — Solingen, RS — Remscheid. «W» — только Wuppertal.
-PRESS_REGIONS = "W,SG,RS"
+# Какие города брать (Presseportal: полиция и пожарные). Коды: W Wuppertal, SG Solingen, RS Remscheid, VE Velbert, HA Haan,
+# WF Wülfrath, SP Sprockhövel, GB Gevelsberg, SW Schwelm, EN Ennepetal. «W» — только Wuppertal. Ленты ненужных городов не запрашиваются.
+PRESS_REGIONS = "W,SG,RS,VE,HA,WF,SP,GB,SW,EN"
 
 # Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
 AUTOBAHN_ROADS = "A1,A46,A535,A43"
