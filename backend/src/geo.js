@@ -56,9 +56,12 @@ function precisionFromResult(r) {
 }
 
 // Возвращает { lat, lon, precision, district } | null (не найдено) | { pending: true } (нет бюджета).
-export async function geocodeStreet(ctx, street) {
+// area — необязательно: { name, bbox } соседнего города (Solingen, Remscheid). По умолчанию — Wuppertal.
+export async function geocodeStreet(ctx, street, area = null) {
   const db = ctx.env.DB;
-  const key = `street|${street.toLowerCase()}`;
+  const city = area ? area.name : CITY.name;
+  const box = area ? area.bbox : CITY.bbox;
+  const key = area ? `street|${city.toLowerCase()}|${street.toLowerCase()}` : `street|${street.toLowerCase()}`;
   const cached = await db.prepare('SELECT * FROM geocode_cache WHERE key = ?').bind(key).first();
   if (cached) {
     if (cached.found) {
@@ -74,10 +77,10 @@ export async function geocodeStreet(ctx, street) {
   if (ctx.lastGeoAt && wait > 0) await sleep(wait);
   ctx.lastGeoAt = Date.now();
 
-  const b = CITY.bbox;
+  const b = box;
   const q = new URLSearchParams({
     format: 'jsonv2', addressdetails: '1', limit: '1',
-    street, city: CITY.name, country: 'Germany',
+    street, city, country: 'Germany',
     viewbox: `${b.minLon},${b.maxLat},${b.maxLon},${b.minLat}`, bounded: '1'
   });
   const res = await fetchWithRetry(`https://nominatim.openstreetmap.org/search?${q}`, {
@@ -94,7 +97,7 @@ export async function geocodeStreet(ctx, street) {
   const lat = r ? parseFloat(r.lat) : NaN;
   const lon = r ? parseFloat(r.lon) : NaN;
 
-  if (!r || !Number.isFinite(lat) || !Number.isFinite(lon) || !inCityBbox(lat, lon)) {
+  if (!r || !Number.isFinite(lat) || !Number.isFinite(lon) || !(lat >= box.minLat && lat <= box.maxLat && lon >= box.minLon && lon <= box.maxLon)) {
     await db.prepare('INSERT OR REPLACE INTO geocode_cache (key, found, created_at) VALUES (?, 0, ?)')
       .bind(key, ISO(ctx.now)).run();
     return null;
