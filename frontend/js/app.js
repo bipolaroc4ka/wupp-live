@@ -25,16 +25,16 @@
   };
   // Центры районов приблизительные (для навигации и показа примерной области), это не границы.
   const DISTRICTS = [
-    { id: 'elberfeld', name: 'Elberfeld', c: [51.2562, 7.1508], r: 2200, keys: ['elberfeld'] },
-    { id: 'elberfeld-west', name: 'Elberfeld-West', c: [51.2430, 7.1180], r: 1900, keys: ['elberfeld-west', 'sonnborn', 'westende'] },
+    { id: 'elberfeld', name: 'Elberfeld', c: [51.2562, 7.1508], r: 2200, keys: ['elberfeld', 'ostersbaum', 'mirke', 'nützenberg', 'hesselnberg', 'lichtscheid', 'grifflenberg'] },
+    { id: 'elberfeld-west', name: 'Elberfeld-West', c: [51.2430, 7.1180], r: 1900, keys: ['elberfeld-west', 'sonnborn', 'westende', 'rauental', 'friedrichsberg'] },
     { id: 'uellendahl', name: 'Uellendahl-Katernberg', c: [51.2720, 7.1380], r: 1900, keys: ['uellendahl', 'katernberg'] },
-    { id: 'barmen', name: 'Barmen', c: [51.2740, 7.1980], r: 2000, keys: ['barmen', 'unterbarmen', 'wichlinghausen'] },
+    { id: 'barmen', name: 'Barmen', c: [51.2740, 7.1980], r: 2000, keys: ['barmen', 'unterbarmen', 'wichlinghausen', 'wupperfeld'] },
     { id: 'heckinghausen', name: 'Heckinghausen', c: [51.2650, 7.2230], r: 1500, keys: ['heckinghausen'] },
     { id: 'oberbarmen', name: 'Oberbarmen', c: [51.2810, 7.2350], r: 1700, keys: ['oberbarmen'] },
     { id: 'langerfeld', name: 'Langerfeld-Beyenburg', c: [51.2850, 7.2800], r: 2600, keys: ['langerfeld', 'beyenburg'] },
     { id: 'ronsdorf', name: 'Ronsdorf', c: [51.2250, 7.2250], r: 2000, keys: ['ronsdorf'] },
-    { id: 'cronenberg', name: 'Cronenberg', c: [51.2040, 7.1330], r: 2300, keys: ['cronenberg'] },
-    { id: 'vohwinkel', name: 'Vohwinkel', c: [51.2330, 7.0590], r: 2300, keys: ['vohwinkel'] }
+    { id: 'cronenberg', name: 'Cronenberg', c: [51.2040, 7.1330], r: 2300, keys: ['cronenberg', 'küllenhahn', 'hahnerberg'] },
+    { id: 'vohwinkel', name: 'Vohwinkel', c: [51.2330, 7.0590], r: 2300, keys: ['vohwinkel', 'dornap', 'schöller'] }
   ];
   const END_DATE_SOURCES = new Set(['nina', 'mobidrom', 'autobahn']);
   const SEVERITIES = new Set(['Minor', 'Moderate', 'Severe', 'Extreme']); // степени опасности CAP (NINA)
