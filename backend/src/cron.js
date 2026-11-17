@@ -3,7 +3,7 @@
 import * as autobahn from './sources/autobahn.js';
 import * as nina from './sources/nina.js';
 import * as presseportal from './sources/presseportal.js';
-import { NEIGHBOR_NAMES } from './sources/presseportal.js';
+import { NEIGHBOR_NAMES, splitNeighbor, backfillFullText } from './sources/presseportal.js';
 import * as wuppertal from './sources/wuppertal.js';
 import * as mobidrom from './sources/mobidrom.js';
 import { sweepExpired, cleanupOld } from './events.js';
@@ -80,13 +80,14 @@ async function retryGeocoding(env) {
   const rows = (await env.DB.prepare(
     "SELECT id, location_name, geocode_attempts FROM events WHERE source = 'presseportal' " +
     "AND status IN ('LIVE','ACTIVE','RECENT') AND geo_precision = 'none' AND location_name IS NOT NULL " +
-    // соседние города («Velbert, Hauptstraße», «Haan») ищутся в своём городе при приёме, а не как улицы Wuppertal
-    NEIGHBOR_NAMES.map(() => "AND location_name NOT LIKE ? ").join('') +
+    // «Velbert» без улицы искать нечего; «Velbert, Friedrichstraße» ищется ниже в своём городе
+    `AND location_name NOT IN (${NEIGHBOR_NAMES.map(() => '?').join(',')}) ` +
     'AND geocode_attempts < 3 ORDER BY published_at DESC LIMIT 3'
-  ).bind(...NEIGHBOR_NAMES.map((n) => `${n}%`)).all()).results || [];
+  ).bind(...NEIGHBOR_NAMES).all()).results || [];
   for (const r of rows) {
     try {
-      const g = await geocodeStreet(ctx, r.location_name);
+      const nb = splitNeighbor(r.location_name);
+      const g = await geocodeStreet(ctx, nb ? nb.street : r.location_name, nb ? nb.region : null);
       if (g && g.pending) break;
       if (!g) {
         await env.DB.prepare('UPDATE events SET geocode_attempts = geocode_attempts + 1 WHERE id = ?').bind(r.id).run();
@@ -110,6 +111,7 @@ async function maintenance(env) {
   const ctx = makeCtx(env);
   await sweepExpired(ctx);
   await retryGeocoding(env);
+  try { await backfillFullText(makeCtx(env)); } catch (e) { await logError(env, 'presseportal', `backfill: ${e.message}`); }
   try {
     const tr = await translatePending(env);
     if (tr.error) await logError(env, 'translate', tr.error);
