@@ -32,22 +32,44 @@ const FULLTEXT_LIMIT = 3500;          // для полного текста ре
 const FULLTEXT_PER_RUN = 6;           // страниц релизов за запуск (лимит Workers Free — 50 подзапросов)
 const MAX_PAGE_CHARS = 1_500_000;
 
-// Регионы: Wuppertal и ближайшие города, о которых пишет та же лента Polizei Wuppertal (коды в заголовке: W / SG / RS).
-// bbox нужен для проверки геокодирования улиц соседнего города: улица с тем же названием в Wuppertal не должна подменить её.
+// Регионы: Wuppertal и ближайшие города. Ленты полиции и пожарных соседних городов проверены по страницам Presseportal.
+// bbox (приблизительный, с запасом) нужен для проверки геокодирования улиц соседнего города: улица с тем же названием
+// в Wuppertal не должна подменить её. aliases — названия частей города, которые бывают в дата-строке («Velbert-Langenberg»).
+const box = (minLon, minLat, maxLon, maxLat) => ({ minLon, minLat, maxLon, maxLat });
 const REGIONS = {
   W: { code: 'W', name: 'Wuppertal', home: true },
-  SG: { code: 'SG', name: 'Solingen', bbox: { minLon: 6.93, minLat: 51.08, maxLon: 7.22, maxLat: 51.23 } },
-  RS: { code: 'RS', name: 'Remscheid', bbox: { minLon: 7.08, minLat: 51.10, maxLon: 7.33, maxLat: 51.27 } }
+  SG: { code: 'SG', name: 'Solingen', bbox: box(6.93, 51.08, 7.22, 51.23) },
+  RS: { code: 'RS', name: 'Remscheid', bbox: box(7.08, 51.10, 7.33, 51.27) },
+  VE: { code: 'VE', name: 'Velbert', aliases: ['Langenberg', 'Neviges'], bbox: box(6.90, 51.28, 7.20, 51.41) },
+  HA: { code: 'HA', name: 'Haan', aliases: ['Gruiten'], bbox: box(6.90, 51.15, 7.10, 51.26) },
+  WF: { code: 'WF', name: 'Wülfrath', bbox: box(6.93, 51.23, 7.15, 51.33) },
+  SP: { code: 'SP', name: 'Sprockhövel', bbox: box(7.15, 51.33, 7.34, 51.43) },
+  GB: { code: 'GB', name: 'Gevelsberg', bbox: box(7.25, 51.28, 7.45, 51.38) },
+  SW: { code: 'SW', name: 'Schwelm', bbox: box(7.22, 51.25, 7.37, 51.34) },
+  EN: { code: 'EN', name: 'Ennepetal', bbox: box(7.25, 51.22, 7.48, 51.33) }
 };
-// Какие регионы брать: переменная PRESS_REGIONS (по умолчанию «W,SG,RS»; «W» — только Wuppertal).
-function enabledRegions(env) {
-  const list = String((env && env.PRESS_REGIONS) || 'W,SG,RS').toUpperCase().split(/[\s,;]+/).filter((c) => REGIONS[c]);
+const DEFAULT_REGIONS = 'W,SG,RS,VE,HA,WF,SP,GB,SW,EN';
+// Какие регионы брать: переменная PRESS_REGIONS (например «W,SG,RS»; «W» — только Wuppertal). Ленты без нужных регионов не запрашиваются.
+export function enabledRegions(env) {
+  const list = String((env && env.PRESS_REGIONS) || DEFAULT_REGIONS).toUpperCase().split(/[\s,;]+/).filter((c) => REGIONS[c]);
   return new Set(list.length ? list : ['W']);
 }
+// Названия соседних городов (не Wuppertal): нужны планировщику, чтобы не искать «Velbert» как улицу в Wuppertal.
+export const NEIGHBOR_NAMES = Object.values(REGIONS).filter((r) => !r.home).map((r) => r.name);
 
+// mode: 'wuppertal' — общая лента Wuppertal (код города в заголовке «POL-W: W / SG / RS» или дата-строка);
+//       'fixed'     — лента одного города;
+//       'named'     — лента нескольких городов: город берётся из «POL-XX: Город:», дата-строки или первых строк текста.
+// Идентификаторы newsroom проверены по страницам Presseportal; формат RSS dienststelle_<id>.rss2 общий для всех лент.
+const rss = (id) => `https://www.presseportal.de/rss/dienststelle_${id}.rss2`;
 const FEEDS = [
-  { id: '115885', publisher: 'Feuerwehr Wuppertal', type: 'fire', url: 'https://www.presseportal.de/rss/dienststelle_115885.rss2' },
-  { id: '11811', publisher: 'Polizei Wuppertal', type: 'police', url: 'https://www.presseportal.de/rss/dienststelle_11811.rss2' }
+  { id: '115885', publisher: 'Feuerwehr Wuppertal', type: 'fire', mode: 'wuppertal', regions: ['W'], url: rss('115885') },
+  { id: '11811', publisher: 'Polizei Wuppertal', type: 'police', mode: 'wuppertal', regions: ['W', 'SG', 'RS'], url: rss('11811') },
+  { id: '115884', publisher: 'Feuerwehr Solingen', type: 'fire', mode: 'fixed', regions: ['SG'], url: rss('115884') },
+  { id: '115882', publisher: 'Feuerwehr Remscheid', type: 'fire', mode: 'fixed', regions: ['RS'], url: rss('115882') },
+  { id: '118285', publisher: 'Feuerwehr Velbert', type: 'fire', mode: 'fixed', regions: ['VE'], url: rss('118285') },
+  { id: '43777', publisher: 'Polizei Mettmann', type: 'police', mode: 'named', regions: ['VE', 'HA', 'WF'], url: rss('43777') },
+  { id: '12726', publisher: 'Polizei Ennepe-Ruhr-Kreis', type: 'police', mode: 'named', regions: ['SP', 'GB', 'SW', 'EN'], url: rss('12726') }
 ];
 
 // ---------- XML / HTML ----------
@@ -147,7 +169,8 @@ function classify(text, publisher) {
 // Районы Wuppertal: в дата-строке релиза бывает не «Wuppertal», а район («Barmen (ots)», «Wuppertal-Vohwinkel (ots)»).
 const DISTRICT_NAMES = ['Oberbarmen', 'Unterbarmen', 'Barmen', 'Wichlinghausen', 'Heckinghausen', 'Nächstebreck', 'Langerfeld', 'Beyenburg',
   'Elberfeld', 'Sonnborn', 'Uellendahl', 'Katernberg', 'Ronsdorf', 'Cronenberg', 'Küllenhahn', 'Vohwinkel', 'Dönberg', 'Langenfeld',
-  'Hahnerberg', 'Arrenberg', 'Ölberg', 'Hatzfeld', 'Varresbeck', 'Nordstadt', 'Südstadt'];
+  'Hahnerberg', 'Arrenberg', 'Ölberg', 'Hatzfeld', 'Varresbeck', 'Nordstadt', 'Südstadt',
+  'Rauental', 'Friedrichsberg', 'Westende', 'Ostersbaum', 'Mirke', 'Nützenberg', 'Hesselnberg', 'Lichtscheid', 'Grifflenberg', 'Dornap', 'Schöller', 'Wupperfeld'];
 // Названия, совпадающие с другими городами или словами: считаются районом только с «Wuppertal-» / «Ortsteil» / «Stadtteil»
 const AMBIGUOUS_DISTRICTS = new Set(['Langenfeld', 'Hatzfeld', 'Nordstadt', 'Südstadt', 'Katernberg']);
 const DISTRICT_RE = new RegExp(`(?<![\\p{L}-])(Wuppertal[- ]\\s?)?(${DISTRICT_NAMES.join('|')})(?![\\p{L}])`, 'giu');
@@ -176,10 +199,34 @@ function districtFromDateline(line) {
 const POL_CODE_RE = /^POL-W\s*(?:\(\d+\))?\s*:\s*(W|SG|RS)(?![\p{L}])/iu;
 const normalizeTitle = (t) => String(t || '')
   .replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*(?:(?:W|SG|RS)(?![\p{L}])[\s:–-]*)?/iu, '')
+  .replace(/\s*[-–]\s*\d{6,8}$/, '') // служебный номер в конце заголовка Polizei Mettmann: «… - 2611069»
   .trim();
 
-// Определяет регион релиза: 'W' | 'SG' | 'RS' | null (другой город).
-function regionOf(line, title, body, feedType) {
+const escRe = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const namesOf = (r) => [r.name, ...(r.aliases || [])];
+
+// Лента нескольких городов: «POL-EN: Gevelsberg: …», «Velbert (ots) - …», иначе единственный упомянутый в начале текста город.
+// Дата-строка или префикс с городом, которого нет в списке («Hilden», «Wetter»), означают «другой город».
+function namedRegion(feed, line, title, body) {
+  const cities = feed.regions.map((c) => REGIONS[c]);
+  const match = (text) => {
+    const t = String(text || '').trim();
+    for (const r of cities) if (namesOf(r).some((n) => new RegExp(`^${escRe(n)}(?![\\p{L}])`, 'iu').test(t))) return r.code;
+    return null;
+  };
+  const prefix = /^POL-[A-Z]+\s*(?:\(\d+\))?\s*:\s*([^:]{2,40}):/i.exec(title);
+  if (prefix) return match(prefix[1]);
+  if (line) return match(line);
+  const head = `${title} ${body.slice(0, 160)}`;
+  const found = cities.filter((r) => namesOf(r).some((n) => new RegExp(`(?<![\\p{L}-])${escRe(n)}(?![\\p{L}])`, 'iu').test(head)));
+  return found.length === 1 ? found[0].code : null;
+}
+
+// Определяет регион релиза: код из REGIONS или null (другой город / неоднозначно).
+function regionOf(feed, line, title, body) {
+  if (feed.mode === 'fixed') return feed.regions[0];
+  if (feed.mode === 'named') return namedRegion(feed, line, title, body);
+  const feedType = feed.type;
   // Код города в заголовке главнее дата-строки: у «POL-W: RS …» и «POL-W: SG …» дата-строка тоже «Wuppertal (ots)»
   // (так отдаёт общая лента Polizei Wuppertal), хотя речь о Remscheid и Solingen.
   const code0 = POL_CODE_RE.exec(title);
@@ -206,7 +253,7 @@ function regionOf(line, title, body, feedType) {
   return sg || rs ? null : 'W'; // лента пожарных Wuppertal целиком относится к Wuppertal
 }
 
-export function toItem(story, feed, nowMs, ttlMs, rejects = null, regions = new Set(['W', 'SG', 'RS'])) {
+export function toItem(story, feed, nowMs, ttlMs, rejects = null, regions = new Set(Object.keys(REGIONS))) {
   const no = (reason) => { if (rejects) rejects[reason] = (rejects[reason] || 0) + 1; return null; };
   const title0 = String(story.title || '').trim();
   const body = stripBoilerplate(String(story.description || '').trim());
@@ -219,13 +266,14 @@ export function toItem(story, feed, nowMs, ttlMs, rejects = null, regions = new 
   if (nowMs >= expiresMs) return no(`старше TTL (${Math.round(ttlMs / 3600e3)} ч)`); // просроченное не сохраняем: статус не должен «мигать»
 
   const line0 = dateline(body);
-  const regionCode = regionOf(line0, title0, body, feed.type);
+  const regionCode = regionOf(feed, line0, title0, body);
   if (!regionCode) return no(`другой город (${line0 || 'без дата-строки'})`);
   if (!regions.has(regionCode)) return no(`регион ${REGIONS[regionCode].name} отключён`);
   const region = REGIONS[regionCode];
   const home = !!region.home;
 
-  const title = normalizeTitle(title0) || title0;
+  let title = normalizeTitle(title0) || title0;
+  if (feed.mode === 'named') title = title.replace(new RegExp(`^(?:${namesOf(region).map(escRe).join('|')})\\s*:\\s*`, 'iu'), '').trim() || title;
   const clean = body.replace(DATELINE_RE, '').trim();
   const eventText = `${title0}. ${body}`;
   const et = parseEventTime(eventText, published);
@@ -386,10 +434,10 @@ async function fetchFeed(feed) {
     timeoutMs: 10000,
     retries: 1 // каждая попытка — подзапрос (лимит Workers Free: 50 на запуск)
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} from Presseportal RSS (${feed.type})`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} from Presseportal RSS (${feed.publisher})`);
   const xml = await res.text();
-  if (xml.length > MAX_XML_CHARS) throw new Error(`Presseportal RSS too large (${feed.type})`);
-  if (!/<rss[\s>]/i.test(xml)) throw new Error(`Invalid RSS response from Presseportal (${feed.type})`);
+  if (xml.length > MAX_XML_CHARS) throw new Error(`Presseportal RSS too large (${feed.publisher})`);
+  if (!/<rss[\s>]/i.test(xml)) throw new Error(`Invalid RSS response from Presseportal (${feed.publisher})`);
   return { xml, stories: parseRss(xml) };
 }
 
@@ -400,6 +448,7 @@ export async function run(ctx) {
   let ok = 0, lastErr = null;
 
   for (const feed of FEEDS) {
+    if (!feed.regions.some((c) => regions.has(c))) continue; // ни один город ленты не включён: не тратим подзапрос
     try {
       const { stories } = await fetchFeed(feed);
       ok += 1;
@@ -409,10 +458,10 @@ export async function run(ctx) {
         const it = toItem(story, feed, ctx.now, ttlMs, rejects, regions);
         if (it) { items.push(it); accepted += 1; }
       }
-      ctx.log(`presseportal ${feed.type}: RSS items=${stories.length}, accepted=${accepted}, отброшено: ${JSON.stringify(rejects)}`);
+      ctx.log(`presseportal ${feed.publisher}: RSS items=${stories.length}, accepted=${accepted}, отброшено: ${JSON.stringify(rejects)}`);
     } catch (e) {
       lastErr = e;
-      ctx.log(`presseportal ${feed.type}: ${e.message}`);
+      ctx.log(`presseportal ${feed.publisher}: ${e.message}`);
     }
   }
   if (!ok) throw lastErr || new Error('All Presseportal RSS feeds failed');
@@ -434,6 +483,7 @@ export async function probe(ctx) {
   const ttlMs = Math.max(1, parseFloat(ctx?.env?.PRESS_TTL_HOURS) || 168) * 3600e3;
   const feeds = [];
   for (const feed of FEEDS) {
+    if (!feed.regions.some((c) => enabledRegions(ctx?.env).has(c))) { feeds.push({ publisher: feed.publisher, status: 'skipped (регионы отключены)' }); continue; }
     try {
       const { xml, stories } = await fetchFeed(feed);
       feeds.push({
