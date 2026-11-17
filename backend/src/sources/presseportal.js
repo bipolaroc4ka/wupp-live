@@ -56,6 +56,13 @@ export function enabledRegions(env) {
 }
 // Названия соседних городов (не Wuppertal): нужны планировщику, чтобы не искать «Velbert» как улицу в Wuppertal.
 export const NEIGHBOR_NAMES = Object.values(REGIONS).filter((r) => !r.home).map((r) => r.name);
+// «Velbert, Friedrichstraße» -> { region, street }; «Velbert» (без улицы) и обычная улица Wuppertal -> null.
+export function splitNeighbor(locationName) {
+  const m = /^([^,]+),\s*(.+)$/.exec(String(locationName || ''));
+  if (!m) return null;
+  const region = Object.values(REGIONS).find((r) => !r.home && r.name.toLowerCase() === m[1].trim().toLowerCase());
+  return region ? { region, street: m[2].trim() } : null;
+}
 
 // mode: 'wuppertal' — общая лента Wuppertal (код города в заголовке «POL-W: W / SG / RS» или дата-строка);
 //       'fixed'     — лента одного города;
@@ -476,6 +483,46 @@ async function probeFullText(story) {
     const { text, diag } = await fetchArticle(url, story.description);
     return { ...diag, found: !!text, chars_text: text ? text.length : 0, rss_chars: story.description.length, head: text ? text.slice(0, 200) : null };
   } catch (e) { return { error: e.message }; }
+}
+
+// Дозагрузка полного текста для записей, у которых анонс остался обрезанным (например, не хватило бюджета подзапросов
+// при первом приёме). Вызывается из служебной задачи; неудачная попытка запоминается на 3 часа (таблица geocode_cache).
+export async function backfillFullText(ctx, limit = 2) {
+  const db = ctx.env.DB;
+  const cutoff = new Date(ctx.now - 3 * 3600e3).toISOString();
+  const rows = (await db.prepare(
+    "SELECT id, title, source_url, description, location_name, event_time, time_precision, published_at FROM events " +
+    "WHERE source = 'presseportal' AND status IN ('LIVE','ACTIVE','RECENT') AND (description LIKE '%...' OR description LIKE '%…') " +
+    "AND source_url LIKE 'https://www.presseportal.de/%' AND source_url <> 'https://www.presseportal.de/' " +
+    "AND NOT EXISTS (SELECT 1 FROM geocode_cache g WHERE g.key = 'fulltext|' || events.id AND g.created_at > ?) " +
+    'ORDER BY published_at DESC LIMIT ?'
+  ).bind(cutoff, limit).all()).results || [];
+  let updated = 0;
+  for (const r of rows) {
+    let full = null;
+    try { full = (await fetchArticle(r.source_url, r.description)).text; } catch (e) { ctx.log(`presseportal backfill ${r.id}: ${e.message}`); }
+    const fullClean = (full || '').replace(DATELINE_RE, '').trim();
+    if (fullClean.length <= String(r.description || '').length) {
+      await db.prepare('INSERT OR REPLACE INTO geocode_cache (key, found, created_at) VALUES (?, 0, ?)').bind(`fulltext|${r.id}`, new Date(ctx.now).toISOString()).run();
+      continue;
+    }
+    const published = Date.parse(r.published_at);
+    const t = parseEventTime(`${r.title}. ${full}`, published);
+    const setTime = t.ms != null && (r.event_time == null || t.precision === 'minute');
+    // улица из полного текста: у соседних городов место хранится как «Город, улица»
+    let location = r.location_name;
+    const nb = splitNeighbor(location);
+    const regionOnly = Object.values(REGIONS).find((x) => !x.home && x.name === location);
+    if (!nb && (!location || regionOnly)) {
+      const st = extractStreet(`${r.title}. ${full}`);
+      if (st) location = regionOnly ? `${regionOnly.name}, ${st}` : st;
+    }
+    await db.prepare(
+      "UPDATE events SET description = ?, event_time = ?, time_precision = ?, location_name = ?, updated_at = ? WHERE id = ?"
+    ).bind(truncate(fullClean, FULLTEXT_LIMIT), setTime ? new Date(t.ms).toISOString() : r.event_time, setTime ? t.precision : r.time_precision, location, new Date(ctx.now).toISOString(), r.id).run();
+    updated++;
+  }
+  return { checked: rows.length, updated };
 }
 
 // Проверка через «Проба» в админке.
