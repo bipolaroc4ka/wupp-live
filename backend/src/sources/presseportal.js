@@ -46,9 +46,18 @@ const REGIONS = {
   SP: { code: 'SP', name: 'Sprockhövel', bbox: box(7.15, 51.33, 7.34, 51.43) },
   GB: { code: 'GB', name: 'Gevelsberg', bbox: box(7.25, 51.28, 7.45, 51.38) },
   SW: { code: 'SW', name: 'Schwelm', bbox: box(7.22, 51.25, 7.37, 51.34) },
-  EN: { code: 'EN', name: 'Ennepetal', bbox: box(7.25, 51.22, 7.48, 51.33) }
+  EN: { code: 'EN', name: 'Ennepetal', bbox: box(7.25, 51.22, 7.48, 51.33) },
+  ME: { code: 'ME', name: 'Mettmann', bbox: box(6.90, 51.21, 7.06, 51.30) },
+  ER: { code: 'ER', name: 'Erkrath', aliases: ['Hochdahl'], bbox: box(6.85, 51.18, 7.02, 51.27) },
+  HT: { code: 'HT', name: 'Hattingen', aliases: ['Blankenstein'], bbox: box(7.08, 51.33, 7.30, 51.45) },
+  WT: { code: 'WT', name: 'Wetter', aliases: ['Wengern'], bbox: box(7.30, 51.34, 7.48, 51.45) },
+  HI: { code: 'HI', name: 'Hilden', bbox: box(6.87, 51.12, 7.03, 51.21) },
+  LF: { code: 'LF', name: 'Langenfeld', bbox: box(6.85, 51.05, 7.05, 51.17) },
+  RA: { code: 'RA', name: 'Ratingen', bbox: box(6.78, 51.24, 6.98, 51.35) },
+  HD: { code: 'HD', name: 'Herdecke', bbox: box(7.35, 51.37, 7.52, 51.46) }
 };
-const DEFAULT_REGIONS = 'W,SG,RS,VE,HA,WF,SP,GB,SW,EN';
+// По умолчанию — ближайшие города; HI, LF, RA, HD (дальше) включаются через PRESS_REGIONS.
+const DEFAULT_REGIONS = 'W,SG,RS,VE,HA,WF,SP,GB,SW,EN,ME,ER,HT,WT';
 // Какие регионы брать: переменная PRESS_REGIONS (например «W,SG,RS»; «W» — только Wuppertal). Ленты без нужных регионов не запрашиваются.
 export function enabledRegions(env) {
   const list = String((env && env.PRESS_REGIONS) || DEFAULT_REGIONS).toUpperCase().split(/[\s,;]+/).filter((c) => REGIONS[c]);
@@ -75,8 +84,8 @@ const FEEDS = [
   { id: '115884', publisher: 'Feuerwehr Solingen', type: 'fire', mode: 'fixed', regions: ['SG'], url: rss('115884') },
   { id: '115882', publisher: 'Feuerwehr Remscheid', type: 'fire', mode: 'fixed', regions: ['RS'], url: rss('115882') },
   { id: '118285', publisher: 'Feuerwehr Velbert', type: 'fire', mode: 'fixed', regions: ['VE'], url: rss('118285') },
-  { id: '43777', publisher: 'Polizei Mettmann', type: 'police', mode: 'named', regions: ['VE', 'HA', 'WF'], url: rss('43777') },
-  { id: '12726', publisher: 'Polizei Ennepe-Ruhr-Kreis', type: 'police', mode: 'named', regions: ['SP', 'GB', 'SW', 'EN'], url: rss('12726') }
+  { id: '43777', publisher: 'Polizei Mettmann', type: 'police', mode: 'named', regions: ['VE', 'HA', 'WF', 'ME', 'ER', 'HI', 'LF', 'RA'], url: rss('43777') },
+  { id: '12726', publisher: 'Polizei Ennepe-Ruhr-Kreis', type: 'police', mode: 'named', regions: ['SP', 'GB', 'SW', 'EN', 'HT', 'WT', 'HD'], url: rss('12726') }
 ];
 
 // ---------- XML / HTML ----------
@@ -122,6 +131,7 @@ function cleanHtml(value) {
 // Служебные части анонса в ленте: «… [ Newsroom ]» в начале, «Lesen Sie hier weiter...» и «Original-Content von: …, übermittelt durch news aktuell».
 function stripBoilerplate(text) {
   return String(text || '')
+    .replace(/^\s*PDF Download\s*\n+/i, '') // ссылка на PDF перед текстом (Feuerwehr Velbert)
     .replace(/^[^\n]*\[\s*Newsroom\s*\]\s*\n?/i, '') // «Feuerwehr Wuppertal [ Newsroom ]» — ссылка перед текстом
     .replace(/^\s*\+\+[^\n]*?\+\+\s*(?=\S)/, '') // «++ Заголовок ++» в начале повторяет заголовок; за ним идёт «Wuppertal (ots) - …»
     .replace(/\s*Lesen Sie hier weiter\s*(?:\.{3}|…)?/gi, '')
@@ -223,9 +233,9 @@ function namedRegion(feed, line, title, body) {
   };
   const prefix = /^POL-[A-Z]+\s*(?:\(\d+\))?\s*:\s*([^:]{2,40}):/i.exec(title);
   if (prefix) return match(prefix[1]);
-  if (line) return match(line);
+  if (line) return /[\/,&]|\sund\s/.test(line) ? null : match(line); // «Ratingen / Mettmann»: сводка по нескольким городам, места нет
   const head = `${title} ${body.slice(0, 160)}`;
-  const found = cities.filter((r) => namesOf(r).some((n) => new RegExp(`(?<![\\p{L}-])${escRe(n)}(?![\\p{L}])`, 'iu').test(head)));
+  const found = cities.filter((r) => namesOf(r).some((n) => new RegExp(`(?<![\\p{L}-])${escRe(n)}(?![\\p{L}])`, 'u').test(head)));
   return found.length === 1 ? found[0].code : null;
 }
 
@@ -386,11 +396,22 @@ function reflow(lines) {
 }
 
 function articleBodyFromText(page, hint, diag = null) {
-  const key = norm(String(hint || '').replace(DATELINE_RE, '')).slice(0, 40);
-  if (key.length < 20) return null;
+  const full = norm(String(hint || '').replace(DATELINE_RE, ''));
+  if (full.length < 18) return null;
   const lines = cleanHtml(page).split('\n').map((l) => l.trim()).filter(Boolean);
-  const start = lines.findIndex((l) => norm(l).includes(key));
-  if (diag) diag.key_found = start >= 0;
+  // Начало текста: сначала по 40 знакам, затем по более коротким (перенос строки на странице может попасть внутрь ключа),
+  // и в одной строке, и на стыке двух соседних строк.
+  let start = -1;
+  for (const n of [40, 28, 18]) {
+    const key = full.slice(0, n);
+    if (key.length < Math.min(n, 18)) continue;
+    start = lines.findIndex((l, i) => norm(l).includes(key) || norm(`${l} ${lines[i + 1] || ''}`).includes(key));
+    if (start >= 0) break;
+  }
+  if (diag) {
+    diag.key_found = start >= 0;
+    if (start < 0) { const probe = full.slice(0, 12); diag.near = lines.find((l) => norm(l).includes(probe)) || null; diag.lines = lines.length; }
+  }
   if (start < 0) return null;
   const out = [];
   let closed = false;
