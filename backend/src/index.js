@@ -145,9 +145,10 @@ async function handleEvents(req, env, url) {
     where.push("status IN ('LIVE','ACTIVE','RECENT')");
     where.push('(expires_at IS NULL OR expires_at > ?)'); binds.push(nowIso);
   }
-  // Окно времени: действующие события (LIVE/ACTIVE) показываются всегда, остальные — по времени происшествия/публикации.
-  where.push("(status IN ('LIVE','ACTIVE') OR COALESCE(event_time, published_at, received_at) >= ?)"); binds.push(since);
-  if (history) { where.push("(status IN ('LIVE','ACTIVE') OR COALESCE(event_time, published_at, received_at) >= ?)"); binds.push(since); }
+  // Окно времени: действующие события (LIVE/ACTIVE) показываются всегда, остальные — по более позднему из «произошло» и
+  // «опубликовано»: пресс-релиз, вышедший час назад, свежий, даже если происшествие было позавчера.
+  const FRESH = 'COALESCE(MAX(published_at, event_time), published_at, event_time, received_at)';
+  where.push(`(status IN ('LIVE','ACTIVE') OR ${FRESH} >= ?)`); binds.push(since);
 
   if (cats) { where.push(`category IN (${cats.map(() => '?').join(',')})`); binds.push(...cats); }
   if (sources.length) { where.push(`source IN (${sources.map(() => '?').join(',')})`); binds.push(...sources); }
@@ -163,7 +164,7 @@ async function handleEvents(req, env, url) {
   const sql =
     `SELECT * FROM events WHERE ${where.join(' AND ')} ` +
     "ORDER BY CASE status WHEN 'LIVE' THEN 0 WHEN 'ACTIVE' THEN 1 WHEN 'RECENT' THEN 2 ELSE 3 END, " +
-    'COALESCE(event_time, published_at, received_at) DESC LIMIT ?';
+    `${FRESH} DESC LIMIT ?`;
   binds.push(limit);
   const rows = (await env.DB.prepare(sql).bind(...binds).all()).results || [];
   const trs = await loadTranslations(env, rows.map((r) => r.id));
