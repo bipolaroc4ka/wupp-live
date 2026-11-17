@@ -65,6 +65,11 @@ export function parseEventTime(text, publishedMs) {
     date = { d: +m[1], m: +m[2], y: m[3] ? +m[3] : null };
   }
   if (!date) {
+    // «am 16.11, gegen 07:10 Uhr» / «am 16.11 gegen …»: без точки после месяца только с «am/vom» и продолжением-временем
+    const short = text.match(/\b(?:am|vom)\s+(\d{1,2})\.(\d{1,2})(?=\s*[,;]|\s+(?:gegen|um|ab|zwischen|in\s+der)\b)/i);
+    if (short && +short[1] >= 1 && +short[1] <= 31 && +short[2] >= 1 && +short[2] <= 12) date = { d: +short[1], m: +short[2], y: null };
+  }
+  if (!date) {
     const mm = text.match(/\b(\d{1,2})\.\s*(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\w*\s*(\d{4})?/i);
     if (mm && +mm[1] >= 1 && +mm[1] <= 31) {
       date = { d: +mm[1], m: MONTHS[mm[2].toLowerCase()], y: mm[3] ? +mm[3] : null };
