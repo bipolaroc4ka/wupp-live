@@ -32,6 +32,19 @@ const FULLTEXT_LIMIT = 3500;          // для полного текста ре
 const FULLTEXT_PER_RUN = 6;           // страниц релизов за запуск (лимит Workers Free — 50 подзапросов)
 const MAX_PAGE_CHARS = 1_500_000;
 
+// Регионы: Wuppertal и ближайшие города, о которых пишет та же лента Polizei Wuppertal (коды в заголовке: W / SG / RS).
+// bbox нужен для проверки геокодирования улиц соседнего города: улица с тем же названием в Wuppertal не должна подменить её.
+const REGIONS = {
+  W: { code: 'W', name: 'Wuppertal', home: true },
+  SG: { code: 'SG', name: 'Solingen', bbox: { minLon: 6.93, minLat: 51.08, maxLon: 7.22, maxLat: 51.23 } },
+  RS: { code: 'RS', name: 'Remscheid', bbox: { minLon: 7.08, minLat: 51.10, maxLon: 7.33, maxLat: 51.27 } }
+};
+// Какие регионы брать: переменная PRESS_REGIONS (по умолчанию «W,SG,RS»; «W» — только Wuppertal).
+function enabledRegions(env) {
+  const list = String((env && env.PRESS_REGIONS) || 'W,SG,RS').toUpperCase().split(/[\s,;]+/).filter((c) => REGIONS[c]);
+  return new Set(list.length ? list : ['W']);
+}
+
 const FEEDS = [
   { id: '115885', publisher: 'Feuerwehr Wuppertal', type: 'fire', url: 'https://www.presseportal.de/rss/dienststelle_115885.rss2' },
   { id: '11811', publisher: 'Polizei Wuppertal', type: 'police', url: 'https://www.presseportal.de/rss/dienststelle_11811.rss2' }
@@ -165,26 +178,35 @@ const normalizeTitle = (t) => String(t || '')
   .replace(/^(?:FW|POL)-[A-Z]+\s*(?:\(\d+\))?\s*:\s*(?:(?:W|SG|RS)(?![\p{L}])[\s:–-]*)?/iu, '')
   .trim();
 
-// Относится ли релиз к городу Wuppertal.
-function isWuppertal(line, title, body, feedType) {
+// Определяет регион релиза: 'W' | 'SG' | 'RS' | null (другой город).
+function regionOf(line, title, body, feedType) {
   // Код города в заголовке главнее дата-строки: у «POL-W: RS …» и «POL-W: SG …» дата-строка тоже «Wuppertal (ots)»
   // (так отдаёт общая лента Polizei Wuppertal), хотя речь о Remscheid и Solingen.
   const code0 = POL_CODE_RE.exec(title);
-  if (code0 && code0[1].toUpperCase() !== 'W') return false;
-  if (line) return /^wuppertal\b/i.test(line) || districtFromDateline(line) !== null;
-  // Без дата-строки город может вообще не упоминаться (релиз называет только улицу). Тогда решает код в заголовке:
-  // «POL-W: W …» — Wuppertal, «POL-W: SG …» / «POL-W: RS …» (и старые «POL-SG» / «POL-RS») — Solingen / Remscheid.
-  // «FW-W» — пожарная служба Wuppertal. Лента пожарных целиком относится к Wuppertal.
-  const code = POL_CODE_RE.exec(title);
-  if (code) return code[1].toUpperCase() === 'W';
-  if (/^(?:POL|FW)-(?:RS|SG)\b/i.test(title)) return false;
-  if (/^FW-W\b/i.test(title)) return true;
+  if (code0) return code0[1].toUpperCase();
+  const legacy = /^(?:POL|FW)-(RS|SG)\b/i.exec(title);
+  if (legacy) return legacy[1].toUpperCase();
+  if (line) {
+    if (/^wuppertal\b/i.test(line) || districtFromDateline(line) !== null) return 'W';
+    if (/^solingen\b/i.test(line)) return 'SG';
+    if (/^remscheid\b/i.test(line)) return 'RS';
+    return null;
+  }
+  // Без дата-строки и без кода город может вообще не упоминаться (релиз называет только улицу).
+  if (/^FW-W\b/i.test(title)) return 'W';
   const head = `${title} ${body.slice(0, 160)}`;
-  if (feedType === 'police') return (/wuppertal/i.test(head) || extractDistrict(head) !== null) && !/remscheid|solingen/i.test(head);
-  return !/remscheid|solingen/i.test(head);
+  const mentionsW = /wuppertal/i.test(head) || extractDistrict(head) !== null;
+  const sg = /solingen/i.test(head), rs = /remscheid/i.test(head);
+  if (feedType === 'police') {
+    if (mentionsW && !sg && !rs) return 'W';
+    if (!mentionsW && sg && !rs) return 'SG';
+    if (!mentionsW && rs && !sg) return 'RS';
+    return null;
+  }
+  return sg || rs ? null : 'W'; // лента пожарных Wuppertal целиком относится к Wuppertal
 }
 
-export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
+export function toItem(story, feed, nowMs, ttlMs, rejects = null, regions = new Set(['W', 'SG', 'RS'])) {
   const no = (reason) => { if (rejects) rejects[reason] = (rejects[reason] || 0) + 1; return null; };
   const title0 = String(story.title || '').trim();
   const body = stripBoilerplate(String(story.description || '').trim());
@@ -197,7 +219,11 @@ export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
   if (nowMs >= expiresMs) return no(`старше TTL (${Math.round(ttlMs / 3600e3)} ч)`); // просроченное не сохраняем: статус не должен «мигать»
 
   const line0 = dateline(body);
-  if (!isWuppertal(line0, title0, body, feed.type)) return no(`не Wuppertal (${line0 || 'без дата-строки'})`);
+  const regionCode = regionOf(line0, title0, body, feed.type);
+  if (!regionCode) return no(`другой город (${line0 || 'без дата-строки'})`);
+  if (!regions.has(regionCode)) return no(`регион ${REGIONS[regionCode].name} отключён`);
+  const region = REGIONS[regionCode];
+  const home = !!region.home;
 
   const title = normalizeTitle(title0) || title0;
   const clean = body.replace(DATELINE_RE, '').trim();
@@ -205,7 +231,7 @@ export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
   const et = parseEventTime(eventText, published);
   const street = extractStreet(eventText);
   // Район: из дата-строки («Barmen (ots)»), иначе из заголовка/текста. Если улицы нет, место = район.
-  const districtName = districtFromDateline(line0) || extractDistrict(`${title0}. ${body}`);
+  const districtName = home ? (districtFromDateline(line0) || extractDistrict(`${title0}. ${body}`)) : null; // районы Wuppertal — только для Wuppertal
 
   const item = {
     source_event_id: `${feed.id}:${story.id}`, // префикс исключает коллизии между лентами
@@ -216,7 +242,8 @@ export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
     source_url: safeStoryUrl(story.link, story.id),
     geo_precision: !street && districtName ? 'district' : 'none',
     district: !street && districtName ? districtName : null,
-    location_name: street || districtName || null,
+    // соседний город: «Solingen, Hofaue» — иначе в карточке непонятно, о каком городе речь
+    location_name: home ? (street || districtName || null) : (street ? `${region.name}, ${street}` : region.name),
     event_time: et.ms != null ? new Date(et.ms).toISOString() : null,
     time_precision: et.precision,
     published_at: new Date(published).toISOString(),
@@ -245,13 +272,13 @@ export function toItem(story, feed, nowMs, ttlMs, rejects = null) {
           }
           if (!street2) {
             street2 = extractStreet(`${title0}. ${full}`);
-            if (street2) item.location_name = street2;
+            if (street2) item.location_name = home ? street2 : `${region.name}, ${street2}`;
           }
         }
       } catch (e) { ctx.log(`presseportal fulltext: ${e.message}`); }
     }
     if (!street2) return;
-    const g = await geocodeStreet(ctx, street2);
+    const g = await geocodeStreet(ctx, street2, home ? null : region);
     if (!g) {
       item.geocode_attempts = 1;
       if (districtName) { item.geo_precision = 'district'; item.district = districtName; } // улицу не нашли, район известен из текста
@@ -369,6 +396,7 @@ async function fetchFeed(feed) {
 export async function run(ctx) {
   const ttlMs = Math.max(1, parseFloat(ctx.env.PRESS_TTL_HOURS) || 168) * 3600e3;
   const items = [];
+  const regions = enabledRegions(ctx.env);
   let ok = 0, lastErr = null;
 
   for (const feed of FEEDS) {
@@ -378,7 +406,7 @@ export async function run(ctx) {
       let accepted = 0;
       const rejects = {};
       for (const story of stories) {
-        const it = toItem(story, feed, ctx.now, ttlMs, rejects);
+        const it = toItem(story, feed, ctx.now, ttlMs, rejects, regions);
         if (it) { items.push(it); accepted += 1; }
       }
       ctx.log(`presseportal ${feed.type}: RSS items=${stories.length}, accepted=${accepted}, отброшено: ${JSON.stringify(rejects)}`);
@@ -414,7 +442,7 @@ export async function probe(ctx) {
         // что стало с каждым релизом: принят или причина отказа (и найденные улица/район)
         decisions: stories.map((st) => {
           const rej = {};
-          const it = toItem(st, feed, Date.now(), ttlMs, rej);
+          const it = toItem(st, feed, Date.now(), ttlMs, rej, enabledRegions(ctx?.env));
           return it
             ? { title: st.title.slice(0, 70), accepted: true, location: it.location_name, geo: it.geo_precision }
             : { title: st.title.slice(0, 70), accepted: false, reason: Object.keys(rej)[0] || '?' };
