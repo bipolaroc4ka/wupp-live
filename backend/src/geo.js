@@ -26,7 +26,9 @@ const RE_TWO = /\b([A-ZÄÖÜ][a-zäöüß]+(?:er|en|e)?)\s+(Straße|Strasse|Str
 const RE_STRASSE_NAME = /\b(?:an|auf|in|von|bei)\s+(?:der|dem)\s+Straße\s+((?:Am|An|Auf|Im|Zum|Zur|Unter|Obere?|Untere?)?\s?[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ]?[a-zäöüß]+)*)/;
 const STRASSE_NAME_STOP = new Set(['Richtung', 'Höhe', 'Nähe', 'Ecke', 'Mitte', 'Wuppertal', 'Ortsteil', 'Kreuzung', 'Einmündung', 'Im', 'In']);
 
-const NOT_STREETS = new Set(['Autobahn', 'Bundesstraße', 'Landstraße', 'Straße', 'Schnellstraße', 'Hauptstraße']);
+// Общие слова, а не названия улиц («Gehweg vor dem Gebäude», «Rettungsweg»)
+const NOT_STREETS = new Set(['Autobahn', 'Bundesstraße', 'Landstraße', 'Straße', 'Schnellstraße', 'Hauptstraße',
+  'Gehweg', 'Radweg', 'Fußweg', 'Rettungsweg', 'Fluchtweg', 'Schulweg', 'Heimweg', 'Umweg', 'Feldweg', 'Waldweg', 'Wanderweg', 'Seitenweg', 'Zufahrtsweg', 'Verbindungsweg', 'Arbeitsweg']);
 
 // Возвращает название улицы (без номера дома) или null.
 export function extractStreet(text) {
