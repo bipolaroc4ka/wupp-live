@@ -3,6 +3,7 @@
 import * as autobahn from './sources/autobahn.js';
 import * as nina from './sources/nina.js';
 import * as presseportal from './sources/presseportal.js';
+import { NEIGHBOR_NAMES } from './sources/presseportal.js';
 import * as wuppertal from './sources/wuppertal.js';
 import * as mobidrom from './sources/mobidrom.js';
 import { sweepExpired, cleanupOld } from './events.js';
@@ -79,9 +80,10 @@ async function retryGeocoding(env) {
   const rows = (await env.DB.prepare(
     "SELECT id, location_name, geocode_attempts FROM events WHERE source = 'presseportal' " +
     "AND status IN ('LIVE','ACTIVE','RECENT') AND geo_precision = 'none' AND location_name IS NOT NULL " +
-    "AND location_name NOT LIKE 'Solingen%' AND location_name NOT LIKE 'Remscheid%' " +
+    // соседние города («Velbert, Hauptstraße», «Haan») ищутся в своём городе при приёме, а не как улицы Wuppertal
+    NEIGHBOR_NAMES.map(() => "AND location_name NOT LIKE ? ").join('') +
     'AND geocode_attempts < 3 ORDER BY published_at DESC LIMIT 3'
-  ).all()).results || [];
+  ).bind(...NEIGHBOR_NAMES.map((n) => `${n}%`)).all()).results || [];
   for (const r of rows) {
     try {
       const g = await geocodeStreet(ctx, r.location_name);
