@@ -51,6 +51,19 @@
     </div>
   </header>
 
+  <button id="wx" class="wx" type="button" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="wxCard"></button>
+  <div id="wxCard" class="wxcard" hidden role="dialog" aria-labelledby="wxTitle">
+    <div class="wx-head">
+      <div class="wx-ico" id="wxIco" aria-hidden="true"></div>
+      <div><div class="wx-temp" id="wxTemp"></div><div class="wx-cond" id="wxCond"></div></div>
+      <button id="wxClose" class="closebtn" type="button"></button>
+    </div>
+    <h2 id="wxTitle" class="wx-title"></h2>
+    <dl class="wx-grid" id="wxGrid"></dl>
+    <div class="wx-fc" id="wxFc"></div>
+    <p class="wx-src" id="wxSrc"></p>
+  </div>
+
   <section id="sheet" class="peek" aria-label="Events">
     <div id="sheetHead" class="sheet-head">
       <div id="sheetHandle" class="handle" role="button" tabindex="0" aria-label="Toggle list" aria-expanded="false"><span></span></div>
