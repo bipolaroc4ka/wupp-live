@@ -15,8 +15,7 @@ binding = "DB"
 database_name = "wuppertal-live"
 database_id = "97ba1363-f8de-44b7-81d7-239074c6a100"
 
-# Необязательно: машинный перевод текстов событий на русский (Workers AI, модель m2m100, есть бесплатная квота).
-# Без этих двух строк перевод просто выключен, приложение показывает немецкий оригинал.
+# Workers AI используется для основного перевода Gemma 4 и запасного m2m100.
 [ai]
 binding = "AI"
 
@@ -51,17 +50,11 @@ PRESS_REGIONS = "W"
 
 # Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
 AUTOBAHN_ROADS = "A1,A46,A535,A43"
-TRANSLATE_PROVIDER = "m2m"
-# Перевод текстов событий (все три необязательны, см. README):
-#   TRANSLATE_PROVIDER = "deepl" | "llm" | "m2m"     (по умолчанию: DeepL при наличии ключа, иначе языковая модель)
-#   TRANSLATE_MODEL    = "@cf/google/gemma-3-12b-it"  (модель Workers AI для режима llm)
-#   Внешняя модель по OpenAI-совместимому API (xAI Grok, OpenAI, OpenRouter …): включается, когда заданы секрет
-#   TRANSLATE_API_KEY и переменная TRANSLATE_API_MODEL (точное имя модели смотрите в документации провайдера).
-#   TRANSLATE_API_URL  = "https://api.x.ai/v1/chat/completions"   (по умолчанию — xAI; для других провайдеров свой адрес)
-#   TRANSLATE_API_MODEL = "<имя модели>"
-#   Приоритет автоматического выбора: внешний API, DeepL, Workers AI. Принудительно: TRANSLATE_PROVIDER = "api".
+
+# Основной перевод — Gemma 4 через Workers AI; при ошибке используется m2m100.
+TRANSLATE_PROVIDER = "llm"
+TRANSLATE_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 
 # Секреты (НЕ хранить здесь!) добавляются командами:
 #   npx wrangler secret put ADMIN_TOKEN
-#   npx wrangler secret put TRANSLATE_API_KEY        (необязательно: внешняя модель, например Grok)
-#   npx wrangler secret put DEEPL_API_KEY            (необязательно: перевод через DeepL)
+#   npx wrangler secret put DEEPL_API_KEY        (необязательно: DeepL)
