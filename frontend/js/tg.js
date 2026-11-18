@@ -3,7 +3,7 @@
 window.WL_TG = (() => {
   const noop = () => {};
   const api = { isTma: false, ready: Promise.resolve(false), colorScheme: () => null, haptic: noop, setBack: noop,
-    openLink: null, setChrome: noop, onTheme: noop, onViewport: noop, viewportHeight: () => null, swipesLocked: false };
+    openLink: null, setChrome: noop, onTheme: noop, onViewport: noop, viewportHeight: () => null, languageCode: () => '', swipesLocked: false };
 
   function hasLaunchParams() {
     if (/tgWebApp(Data|Version|Platform)/.test(location.hash)) return true;
@@ -37,6 +37,7 @@ window.WL_TG = (() => {
   });
 
   api.colorScheme = () => (W && (W.colorScheme === 'light' || W.colorScheme === 'dark')) ? W.colorScheme : null;
+  api.languageCode = () => { try { return ((W && W.initDataUnsafe && W.initDataUnsafe.user && W.initDataUnsafe.user.language_code) || '').toLowerCase().slice(0, 2); } catch { return ''; } };
   api.viewportHeight = () => (W && (W.viewportStableHeight || W.viewportHeight)) || null;
 
   api.onTheme = (cb) => safe(() => W && W.onEvent('themeChanged', cb));
