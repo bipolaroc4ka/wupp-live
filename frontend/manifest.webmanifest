@@ -1,14 +1,14 @@
 {
   "name": "Wuppertal Live",
   "short_name": "Wuppertal Live",
-  "description": "Карта текущих событий Вупперталя / Karte aktueller Ereignisse in Wuppertal",
+  "description": "Karte aktueller Ereignisse in Wuppertal / Карта текущих событий Вупперталя",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#0b0f14",
   "theme_color": "#0b0f14",
-  "lang": "ru",
+  "lang": "de",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
