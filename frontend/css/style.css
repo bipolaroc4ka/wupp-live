@@ -180,6 +180,37 @@ body.has-detail #sheet { visibility: hidden; }
   padding: 10px 16px; border-radius: 12px; background: var(--text); color: var(--surface); font-size: 14px; font-weight: 600; transition: opacity .18s, transform .18s; }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 
+
+/* ---------- погода ---------- */
+.wx { position: fixed; z-index: 18; top: calc(var(--topbar-h) + 10px); right: calc(10px + var(--safe-r)); display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 10px;
+  border-radius: 18px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); color: var(--text); font-size: 15px; font-weight: 650;
+  font-variant-numeric: tabular-nums; box-shadow: var(--shadow); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.wx[hidden] { display: none; }
+.wx:hover, .wx[aria-expanded="true"] { background: var(--surface-2); }
+.wx .fc { font-size: 11px; font-weight: 600; color: var(--muted); }
+.wxcard { position: fixed; z-index: 35; top: calc(var(--topbar-h) + 52px); right: calc(10px + var(--safe-r)); width: min(340px, calc(100vw - 20px)); max-height: calc(var(--app-h, 100dvh) - var(--topbar-h) - 70px); overflow-y: auto;
+  padding: 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.wxcard[hidden] { display: none; }
+.wx-head { position: relative; display: flex; align-items: center; gap: 12px; padding-right: 36px; }
+.wx-head .closebtn { position: absolute; top: -4px; right: -6px; }
+.wx-ico { color: var(--accent); }
+.wx-temp { font-size: 34px; line-height: 1.05; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wx-cond { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.wx-title { margin: 10px 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.wx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 12px; }
+.wx-grid > div { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.wx-grid dt { font-size: 12px; color: var(--muted); }
+.wx-grid dd { margin: 2px 0 0; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wx-grid dd small { display: block; font-weight: 500; font-size: 12px; color: var(--muted); }
+.wx-fc { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 10px; text-align: center; font-variant-numeric: tabular-nums; }
+.wx-fc > div { padding: 6px 0; border-radius: 10px; background: var(--surface-2); font-size: 13px; }
+.wx-fc .h { color: var(--muted); font-size: 12px; }
+.wx-fc svg { display: block; margin: 4px auto; color: var(--accent); }
+.wx-fc .p { color: var(--muted); font-size: 11px; min-height: 13px; }
+.wx-src { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+body.has-detail .wx { display: none; }
+@media (max-width: 380px) { .wx-fc { grid-template-columns: repeat(3, 1fr); } .wx-fc > div:nth-child(n+4) { display: none; } }
+
 /* ---------- окно «О данных» ---------- */
 .modal { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .55); display: grid; align-items: end; justify-items: center; }
 .modal-card { position: relative; width: 100%; max-width: 560px; max-height: calc(var(--app-h, 100dvh) * .9); overflow-y: auto; background: var(--surface); border-radius: 18px 18px 0 0; padding: 18px 18px calc(18px + var(--safe-b)); }
