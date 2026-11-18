@@ -4,6 +4,7 @@ import { CATEGORIES, STATUSES } from './config.js';
 import { SOURCES, runScheduled, runSource, ensureSources } from './cron.js';
 import { ISO } from './util.js';
 import { loadTranslations, textHash } from './translate.js';
+import { fetchWeather } from './weather.js';
 
 // ---------- вспомогательное ----------
 
@@ -290,6 +291,12 @@ export default {
       if (req.method === 'GET' && path === '/api/status') {
         if (rateLimited(`pub:${clientIp(req)}`, 240, 60_000)) return json(env, req, { error: 'rate_limited' }, 429, { 'retry-after': '30' });
         return await cached(req, env, ctx, url, 20, () => handleStatus(env));
+      }
+
+      if (req.method === 'GET' && path === '/api/weather') {
+        if (rateLimited(`pub:${clientIp(req)}`, 240, 60_000)) return json(env, req, { error: 'rate_limited' }, 429, { 'retry-after': '30' });
+        try { return await cached(req, env, ctx, url, 600, () => fetchWeather()); }
+        catch (e) { console.error('weather failed:', e && e.message); return json(env, req, { error: 'weather_unavailable' }, 502, { 'cache-control': 'no-store' }); }
       }
 
       if (path.startsWith('/api/admin/')) {
