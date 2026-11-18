@@ -66,7 +66,7 @@ window.WL_I18N = {
     themeAuto: 'Авто', themeLight: 'Светлая', themeDark: 'Тёмная',
     periodHint: 'Период относится к недавним сообщениям. Действующие события источников показываются независимо от него.',
     machTr: 'Автоперевод с немецкого, возможны неточности.', origDe: 'Оригинал на немецком.', showOrig: 'Показать оригинал', showTr: 'Показать перевод',
-    lagPub: 'опубликовано через {d}', u_d: 'д', u_h: 'ч', u_m: 'мин', toList: 'К списку'
+    lagPub: 'опубликовано через {d}', u_d: 'д', u_h: 'ч', u_m: 'мин', toList: 'К списку', expandList: 'Развернуть список', collapseList: 'Свернуть список'
   },
   de: {
     langCode: 'DE', htmlLang: 'de', locale: 'de-DE',
@@ -134,6 +134,6 @@ window.WL_I18N = {
     themeAuto: 'Auto', themeLight: 'Hell', themeDark: 'Dunkel',
     periodHint: 'Der Zeitraum gilt für neueste Meldungen. Aktive Meldungen der Quellen werden unabhängig davon angezeigt.',
     machTr: '', origDe: '', showOrig: '', showTr: '',
-    lagPub: 'veröffentlicht nach {d}', u_d: 'T', u_h: 'Std', u_m: 'Min', toList: 'Zur Liste'
+    lagPub: 'veröffentlicht nach {d}', u_d: 'T', u_h: 'Std', u_m: 'Min', toList: 'Zur Liste', expandList: 'Liste aufklappen', collapseList: 'Liste einklappen'
   }
 };
