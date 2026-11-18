@@ -1,1136 +1,185 @@
-
-import { inCityBbox } from '../config.js';
+// WSW (Wuppertaler Stadtwerke): сообщения об изменениях в движении автобусов и Schwebebahn.
+// Источник — две официальные ленты сайта WSW (News и Presseinformationen). В них много рекламы (тарифы, акции, мероприятия),
+// поэтому берём только записи, где есть и транспортный предмет (линия, Schwebebahn, остановка), и признак изменения движения
+// (объезд, отмена, перенос остановки, замещающий транспорт, сбой). Остальное отбрасывается.
 import { fetchWithRetry, ISO, truncate, shortId } from '../util.js';
-import { geocodeStreet } from '../geo.js';
+import { extractStreet, geocodeStreet } from '../geo.js';
 import { syncSource } from '../events.js';
+import { parseGermanDates } from './wuppertal.js';
+import { extractDistrict } from './presseportal.js';
 
 export const meta = {
-  id: 'wuppertal',
-  name: 'Stadt Wuppertal (Verkehrs-Pressemitteilungen)',
+  id: 'wsw',
+  name: 'WSW (Wuppertaler Stadtwerke: Bus und Schwebebahn)',
   intervalSec: 600,
-  cron: '*/10 * * * *',
-  group: 'traffic'
+  cron: '2-59/10 * * * *',
+  group: 'transit'
 };
 
-const FEED_URL =
-  'https://www.wuppertal.de/presse/aktuelle-meldungen.php?sp%3Aout=rss';
-
-const SCOPE = 'municipal/press-roadworks';
+export const FEEDS = [
+  'https://www.wsw-online.de/suchergebnisse/rss.xml',
+  'https://www.wsw-online.de/suchergebnisse/presseinformationen.xml'
+];
+const SCOPE = 'wsw/notices';
 const MAX_AGE_DAYS = 45;
-const EVENT_TTL_DAYS = 30;       // дорожные сообщения
-const TOPIC_TTL_DAYS = 7;        // остальные темы (транспорт, мероприятия, коммунальные сбои)
+const TTL_DAYS = 14; // без даты окончания в тексте: от даты публикации (или от начала)
 const DAY = 86400000;
+const MAX_ITEMS_PER_FEED = 40;
+const MAX_XML_CHARS = 2_000_000;
+const DESCRIPTION_LIMIT = 1200;
 
-const ALLOWED_GEO_PRECISIONS = new Set([
-  'source',
-  'street',
-  'district',
-  'city',
-  'none'
-]);
+// Транспортный предмет (без \b в конце: «Buslinien», «Schwebebahnhaltestelle»)
+const SUBJECT = /(?:\blinien?\s+\d{2,3}|\bbuslinie|\bschwebebahn|\btaxibus|\bhaltestelle|\bfahrplan|\bersatzverkehr|\bschienenersatz|\bwsw[\s-]+(?:bus|linie))/i;
+// Признак изменения движения
+const ACTION = /(?:umleit|abweichende\s+linienführung|ausfall|fällt\s+aus|fallen\s+aus|entfäll|eingestellt|ersatzverkehr|schienenersatz|betriebseinstellung|kein\s+betrieb|nicht\s+(?:bedient|angefahren)|verlegt|fahrplanänderung|störung|einschränkung|verspätung|sperr|baumaßnahme|bauarbeiten|taxibus)/i;
 
-const ROAD_KEYWORDS =
-  /\b(baustelle|baustellen|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|halbseitige sperrung|umleitung|verkehrsbehinderung|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|fahrbahnschäden|fahrbahn|straßensanierung|straßenbau|arbeitsstelle|ampelanlage|ampelarbeiten|lichtsignalanlage|gehwegsanierung|gehweg|radwegsanierung|radweg|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|deckensanierung|pflasterarbeiten|unterführung|tunnelarbeiten|verkehrsführung|verkehrssicherung|brücke|brücken|tunnel|stützmauer|stützwand)\b/i;
-
-const STRONG_ROAD_KEYWORDS =
-  /\b(baustelle|baumaßnahme|bauarbeiten|fahrbahnsanierung|fahrbahndecke|asphalt|sperrung|vollsperrung|teilsperrung|umleitung|brückensanierung|brückenarbeiten|brückenbau|fahrbahnschäden|straßensanierung|straßenbau|arbeitsstelle|ampelarbeiten|lichtsignalanlage|gehwegsanierung|radwegsanierung|kanalsanierung|tiefbauarbeiten|deckensanierung)\b/i;
-
-const CLOSURE_KEYWORDS =
-  /\b(vollsperrung|voll gesperrt|teilsperrung|halbseitige sperrung|gesperrt|sperrung|umleitung|nicht passierbar|für den verkehr gesperrt)\b/i;
-
-const ROADWORKS_KEYWORDS =
-  /\b(baustelle|baumaßnahme|baumaßnahmen|bauarbeiten|straßenbauarbeiten|fahrbahnsanierung|fahrbahndecke|fahrbahnschäden|fahrbahn|asphalt|straßensanierung|straßenbau|sanierung|sanieren|reparatur|repariert|erneuerung|erneuert|instandsetzung|instandsetzen|deckensanierung|pflasterarbeiten|brückensanierung|brückenarbeiten|brückenbau|treppensanierung|geländerarbeiten|gehwegsanierung|radwegsanierung|kanalarbeiten|kanalsanierung|tiefbauarbeiten|straßenunterhaltung|unterführung|tunnelarbeiten|stützmauer|stützwand)\b/i;
-
-const DISRUPTION_KEYWORDS =
-  /\b(verkehrsbehinderung|verkehrsführung|ampelarbeiten|ampelanlage|lichtsignalanlage|verkehrssicherung)\b/i;
-
-const INFRASTRUCTURE_KEYWORDS =
-  /\b(brücke|brücken|tunnel|unterführung|treppe|treppen|geländer|stützmauer|stützwand|kanal|kanäle|gehweg|radweg)\b/i;
-
-// Другие темы из того же RSS. Принимаются только по сильным признакам; всё остальное, как и раньше, отбрасывается.
-const TRANSIT_SUBJECT =
-  /\b(schwebebahn|wsw|buslinie|buslinien|busse|linie\s+\d{3}|ersatzverkehr|schienenersatz|haltestelle|haltestellen|fahrplan|nachtexpress)\b/i;
-const TRANSIT_ACTIONS = [
-  ['transit_stop', /(?:haltestellen?[^.\n]{0,80}(?:nicht\s+(?:bedient|angefahren)|verlegt|entfällt|aufgehoben|verschoben)|nicht\s+(?:bedient|angefahren))/i],
-  ['transit_cancel', /\b(ausfall|fällt\s+aus|fallen\s+aus|eingestellt|ersatzverkehr|schienenersatz|betriebseinstellung|kein\s+betrieb)\b/i],
-  ['transit_detour', /\b(umleitung|umgeleitet|abweichende\s+linienführung|fahren\s+eine\s+umleitung)\b/i],
-  ['transit_delay', /\b(verspätung|verspätungen|verzögerung|verzögerungen|störung|einschränkung|einschränkungen)\b/i]
-];
-const EVENT_SUBJECT =
-  /\b(stadtfest|marathon|halbmarathon|lauf|demonstration|kundgebung|weihnachtsmarkt|karnevalsumzug|karneval|umzug|straßenfest|festival|konzert|großveranstaltung|veranstaltung|kirmes|parade|radrennen)\b/i;
-const EVENT_ACTION =
-  /\b(sperrung|sperrungen|gesperrt|vollsperrung|halteverbot|parkverbot|verkehrseinschränkung|verkehrseinschränkungen|umleitung)\b/i;
-const TOPICS = [
-  ['evacuation', /\b(bombenfund|bombenentschärfung|bombe|blindgänger|kampfmittel|entschärfung|evakuierung)\b/i],
-  ['infra_power', /\b(stromausfall|stromstörung)\b/i],
-  ['infra_water', /\b(wasserrohrbruch|rohrbruch|trinkwasserverunreinigung|trinkwasserversorgung|wasserversorgung|abkochgebot)\b/i],
-  ['infra_damage', /\b(sturmschäden|unwetterschäden|hochwasserschäden|erdrutsch|hangrutsch|umgestürzte[rn]?\s+bäume?)\b/i]
+const CATEGORIES = [
+  ['transit_detour', /umleit|abweichende\s+linienführung/i],
+  ['transit_stop', /haltestellen?[^.\n]{0,100}(?:nicht\s+(?:bedient|angefahren)|verlegt|entfäll|aufgehoben|verschoben)|nicht\s+(?:bedient|angefahren)/i],
+  ['transit_cancel', /ausfall|fällt\s+aus|fallen\s+aus|eingestellt|ersatzverkehr|schienenersatz|betriebseinstellung|kein\s+betrieb|entfäll/i],
+  ['transit_delay', /störung|einschränkung|verspätung|fahrplanänderung|sperr|baumaßnahme|bauarbeiten|taxibus/i]
 ];
 
-// Тема сообщения, не связанная напрямую с дорожными работами (или null).
-export function classifyTopic(text) {
-  for (const [category, re] of TOPICS) if (re.test(text)) return category;
-  if (TRANSIT_SUBJECT.test(text)) {
-    for (const [category, re] of TRANSIT_ACTIONS) if (re.test(text)) return category;
+const decode = (v) => String(v || '')
+  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+  .replace(/&nbsp;/gi, ' ').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, '"')
+  .replace(/&apos;|&#0?39;/gi, "'")
+  .replace(/&#(\d+);/g, (_, n) => { const c = +n; return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : ''; })
+  .replace(/&#x([0-9a-f]+);/gi, (_, n) => { const c = parseInt(n, 16); return c > 0 && c <= 0x10ffff ? String.fromCodePoint(c) : ''; })
+  .replace(/&amp;/gi, '&');
+const text = (v) => decode(decode(v).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+
+function tag(block, names) {
+  for (const n of names) {
+    const m = block.match(new RegExp(`<(?:[\\w.-]+:)?${n}\\b[^>]*>([\\s\\S]*?)</(?:[\\w.-]+:)?${n}\\s*>`, 'i'));
+    if (m && text(m[1])) return text(m[1]);
   }
-  if (EVENT_SUBJECT.test(text) && EVENT_ACTION.test(text)) return 'event_restriction';
-  return null;
+  return '';
 }
 
-const BOILERPLATE_PATTERNS = [
-  /^sie befinden sich hier\b/i,
-  /^startseite$/i,
-  /^navigation$/i,
-  /^hauptnavigation$/i,
-  /^menü$/i,
-  /^menu$/i,
-  /^zum inhalt$/i,
-  /^zum hauptinhalt$/i,
-  /^seitenanfang$/i,
-  /^breadcrumb/i,
-  /^suche$/i,
-  /^kontakt$/i,
-  /^impressum$/i,
-  /^datenschutz$/i
-];
-
-const BOILERPLATE_PREFIX =
-  /^\s*(?:sie befinden sich hier\s*:|breadcrumb\s*:|hauptnavigation\s*:|navigation\s*:)\s*/i;
-
-const MONTHS = {
-  januar: 0,
-  februar: 1,
-  märz: 2,
-  april: 3,
-  mai: 4,
-  juni: 5,
-  juli: 6,
-  august: 7,
-  september: 8,
-  oktober: 9,
-  november: 10,
-  dezember: 11
-};
-
-const MONTH_PATTERN =
-  'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
-
-const WEEKDAYS =
-  '(?:Montag|Dienstag|Mittwoch|Donnerstag|Freitag|Samstag|Sonntag)';
-
-// Суффиксы улиц с заглавной и строчной первой буквой: «Pahlkestraße» (слитно) и «Siebeneicker Straße» (отдельным словом).
-// Раньше были только строчные, поэтому «Friedrich-Ebert-Straße» и «Siebeneicker Straße» вообще не находились.
-const STREET_SUFFIX =
-  '(?:[Ss]traße|[Ss]trasse|[Ss]tr\\.?|[Ww]eg|[Pp]latz|[Aa]llee|[Uu]fer|[Gg]asse|[Rr]ing|[Dd]amm|[Cc]haussee|[Ss]teig|[Pp]fad|[Mm]arkt|[Ww]all|[Ss]tieg|[Bb]ogen|[Bb]rücke|[Bb]ruecke)';
-
-// Слова, с которых название улицы не начинается («Sanierung Siebeneicker Straße», «Der Weg»)
-const NOT_STREET_START =
-  '(?!(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Auf|An|Im|In|Zum|Zur|Bitte|Wegen|Sperrung|Vollsperrung|Teilsperrung|Sanierung|Arbeiten|Bauarbeiten|Baustelle|Fahrbahnsanierung|Straßenbauarbeiten|Umleitung|Verkehr|Neue|Neuer|Neues|Heute|Morgen|Schluss)\\s)';
-
-function decodeHtml(value) {
-  return String(value || '')
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;|&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, n) => {
-      const code = Number(n);
-      return code >= 0 && code <= 0x10ffff
-        ? String.fromCodePoint(code)
-        : '';
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
-      const code = parseInt(n, 16);
-      return code >= 0 && code <= 0x10ffff
-        ? String.fromCodePoint(code)
-        : '';
+// Разбор RSS и Atom. Возвращает [{ id, title, url, published, description }]
+export function parseFeed(xml) {
+  const blocks = String(xml || '').slice(0, MAX_XML_CHARS).match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) || [];
+  const out = [];
+  for (const b of blocks.slice(0, MAX_ITEMS_PER_FEED)) {
+    const href = (b.match(/<link\b[^>]*\bhref=["']([^"']+)["']/i) || [])[1];
+    const url = safeHttps(href ? decode(href) : tag(b, ['link']));
+    const title = tag(b, ['title']);
+    const dateStr = tag(b, ['pubDate', 'published', 'updated', 'date']);
+    const published = Date.parse(dateStr);
+    if (!title || !url || !Number.isFinite(published)) continue;
+    out.push({
+      id: tag(b, ['guid', 'id']) || url,
+      title, url, published,
+      description: tag(b, ['description', 'summary', 'content'])
     });
+  }
+  return out;
 }
 
-function textOf(value) {
-  return decodeHtml(
-    String(value || '')
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|h[1-6])>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-  )
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+// В ленте WSW встречаются битые ссылки вида «https://www.wsw-online.de/ttps://www.wsw-online.de/mobilitaet/…»: берём вторую часть
+function safeHttps(u) {
+  u = String(u || '').replace(/^https:\/\/www\.wsw-online\.de\/ttps?:\/\//i, 'https://');
+  try { const x = new URL(u); return x.protocol === 'https:' && /(^|\.)wsw-online\.de$/i.test(x.hostname) ? x.href : ''; } catch { return ''; }
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Сообщение об изменении движения или null (причина отказа — в reason)
+export function classify(title, description) {
+  const all = `${title}. ${description}`;
+  if (!SUBJECT.test(all)) return { reason: 'не про маршруты/остановки' };
+  if (!ACTION.test(all)) return { reason: 'нет изменения движения' };
+  for (const [cat, re] of CATEGORIES) if (re.test(title)) return { category: cat };
+  for (const [cat, re] of CATEGORIES) if (re.test(all)) return { category: cat };
+  return { reason: 'не удалось определить тип' };
 }
 
-function tagValue(xml, tag) {
-  const escaped = escapeRegExp(tag);
-
-  const re = new RegExp(
-    `<(?:[\\w.-]+:)?${escaped}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${escaped}\\s*>`,
-    'i'
-  );
-
-  return xml.match(re)?.[1]?.trim() || '';
-}
-
-function isBoilerplateItem(item) {
-  const title = textOf(item.title || '').trim();
-
-  if (!title) return true;
-
-  if (BOILERPLATE_PATTERNS.some((pattern) => pattern.test(title))) {
-    return true;
-  }
-
-  if (
-    BOILERPLATE_PREFIX.test(title) &&
-    title.replace(BOILERPLATE_PREFIX, '').trim().length < 100
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-function cleanDescription(value) {
-  let description = textOf(value);
-
-  description = description.replace(
-    /^\s*(?:sie befinden sich hier\s*:)[^\n]*(?:\n|$)/i,
-    ''
-  );
-
-  return description.trim();
-}
-
-function parseFeed(xml) {
-  const items = [];
-  const re =
-    /<(?:[\w.-]+:)?item\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?item\s*>/gi;
-
-  let match;
-
-  while ((match = re.exec(xml))) {
-    const block = match[1];
-
-    const title = textOf(tagValue(block, 'title'));
-    const link = textOf(tagValue(block, 'link'));
-
-    const description = cleanDescription(
-      tagValue(block, 'description') ||
-      tagValue(block, 'encoded')
-    );
-
-    const guid = textOf(tagValue(block, 'guid'));
-    const pubDate = textOf(tagValue(block, 'pubDate'));
-
-    if (!title || !link) continue;
-
-    let url;
-
-    try {
-      url = new URL(link, 'https://www.wuppertal.de');
-    } catch {
-      continue;
-    }
-
-    if (
-      url.protocol !== 'https:' ||
-      !['www.wuppertal.de', 'wuppertal.de'].includes(url.hostname)
-    ) {
-      continue;
-    }
-
-    const item = {
-      title,
-      description: truncate(description, 2200),
-      url: url.href,
-      guid,
-      pubDate
-    };
-
-    if (isBoilerplateItem(item)) continue;
-
-    items.push(item);
-  }
-
-  return items;
-}
-
-function extractStreetCandidates(text) {
-  if (!text) return [];
-
-  const candidates = [];
-
-  const patterns = [
-    new RegExp(
-      `\\b${NOT_STREET_START}[A-ZÄÖÜ][\\p{L}\\d'’\\-]*(?:\\s+[A-ZÄÖÜ][\\p{L}\\d'’\\-]*){0,1}\\s+${STREET_SUFFIX}\\b`,
-      'gu'
-    ),
-    new RegExp(
-      `\\b${NOT_STREET_START}[A-ZÄÖÜ][\\p{L}\\d'’]*(?:-[A-ZÄÖÜ][\\p{L}\\d'’]*)*-?${STREET_SUFFIX}\\b`,
-      'gu'
-    ),
-    /\b(?:Am|An der|An den|Auf dem|Auf der|Im|In der|Unter dem|Über dem|Zum|Zur)\s+[A-ZÄÖÜ][\p{L}\d-]*(?:\s+[A-ZÄÖÜ][\p{L}\d-]*){0,3}/gu
-  ];
-
-  for (const pattern of patterns) {
-    for (const match of text.matchAll(pattern)) {
-      const value = match[0]
-        .replace(/[.,;:!?]+$/, '')
-        .trim();
-
-      if (value.length < 4 || value.length > 100) continue;
-
-      candidates.push({
-        name: value,
-        index: match.index
-      });
-    }
-  }
-
-  const unique = new Map();
-
-  for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
-    const key = candidate.name
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!unique.has(key)) {
-      unique.set(key, candidate);
-    }
-  }
-
-  return [...unique.values()];
-}
-
-// Название для «zwischen X und Y»: слова с заглавной буквы, возможно с предлогом («Am Elisabetheim»).
-// Регулярка БЕЗ флага i: иначе заглавная буква в классе совпадала бы и со строчными, и фраза «… und Katernberg verläuft»
-// захватила бы лишнее.
-const BETWEEN_NAME = String.raw`(?:(?:Am|Im|An|Auf|Beim|Zum|Zur|Vom)(?:\s+(?:der|dem|den))?\s+)?[A-ZÄÖÜ][\p{L}\d'’-]*(?:\s+[A-ZÄÖÜ][\p{L}\d'’-]*){0,3}`;
-const BETWEEN_RE = new RegExp(String.raw`\b[Zz]wischen\s+(${BETWEEN_NAME})\s+und\s+(${BETWEEN_NAME})`, 'u');
-
-function extractBetweenLocation(text) {
-  const match = BETWEEN_RE.exec(text);
-
-  if (!match) return null;
-
-  const first = match[1].trim();
-  const second = match[2].trim();
-
-  if (
-    first.length < 3 ||
-    second.length < 3 ||
-    first.length > 100 ||
-    second.length > 100
-  ) {
-    return null;
-  }
-
-  return {
-    type: 'between',
-    streets: [first, second],
-    label: `zwischen ${first} und ${second}`
-  };
-}
-
-function extractLocation(text) {
-  if (!text) {
-    return {
-      type: 'none',
-      streets: [],
-      label: null
-    };
-  }
-
-  const between = extractBetweenLocation(text);
-
-  if (between) {
-    // «Sanierung der Siebeneicker Straße … zwischen Untenrohleder und Am Elisabetheim»: улица — это Siebeneicker Straße,
-    // а «zwischen …» только ограничивает участок (это не улицы, их геокодирование дало бы неверную точку)
-    const bounds = between.streets.map((x) => x.toLowerCase());
-    const main = extractStreetCandidates(text).find((c) => {
-      const name = c.name.toLowerCase();
-      return !bounds.some((b) => b === name || b.includes(name) || name.includes(b));
-    });
-
-    if (main) {
-      return {
-        type: 'between',
-        streets: [main.name],
-        label: `${main.name}, ${between.label}`
-      };
-    }
-
-    return between;
-  }
-
-  const candidates = extractStreetCandidates(text);
-
-  if (!candidates.length) {
-    return {
-      type: 'none',
-      streets: [],
-      label: null
-    };
-  }
-
-  const intersectionMatch =
-    /\b(kreuzung|kreuzungsbereich|ecke|einmündung|muendung|mündung|kreuzen sich)\b/i.exec(text);
-
-  if (intersectionMatch) {
-    const after = candidates.filter(
-      (item) => item.index > intersectionMatch.index
-    );
-
-    if (after.length >= 2) {
-      const streets = after.slice(0, 2).map((item) => item.name);
-
-      return {
-        type: 'intersection',
-        streets,
-        label: `${streets[0]} / ${streets[1]}`
-      };
-    }
-  }
-
-  if (candidates.length >= 2) {
-    const first = candidates[0];
-    const second = candidates[1];
-
-    const betweenText = text.slice(
-      first.index + first.name.length,
-      second.index
-    );
-
-    if (/^\s*(?:\/|&|und)\s*$/i.test(betweenText)) {
-      return {
-        type: 'intersection',
-        streets: [first.name, second.name],
-        label: `${first.name} / ${second.name}`
-      };
-    }
-  }
-
-  return {
-    type: 'single',
-    streets: [candidates[0].name],
-    label: candidates[0].name
-  };
-}
-
-function extractStreet(text) {
-  return extractLocation(text).streets[0] || null;
-}
-
-function makeDate(year, month, day) {
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day)
-  ) {
-    return null;
-  }
-
-  const date = new Date(Date.UTC(year, month, day));
-
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month ||
-    date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
-}
-
-function resolveYear(day, month, explicitYear, now) {
-  if (explicitYear) return explicitYear;
-
-  const current = new Date(now);
-  const currentYear = current.getUTCFullYear();
-
-  const candidate = makeDate(currentYear, month, day);
-
-  if (!candidate) return null;
-
-  // Если дата без года находится более чем на месяц в прошлом,
-  // предполагаем следующий календарный год.
-  if (candidate.getTime() < now - 31 * DAY) {
-    return currentYear + 1;
-  }
-
-  return currentYear;
-}
-
-function parseDateCandidate(match, now) {
-  let day;
-  let month;
-  let year = null;
-
-  if (match[2] && match[3]) {
-    day = Number(match[2]);
-    month = MONTHS[match[3].toLowerCase()];
-    year = match[4] ? Number(match[4]) : null;
-  } else if (match[5] && match[6] && match[7]) {
-    day = Number(match[5]);
-    month = Number(match[6]) - 1;
-    year = Number(match[7]);
-  } else {
-    return null;
-  }
-
-  if (
-    !Number.isInteger(day) ||
-    !Number.isInteger(month) ||
-    month < 0 ||
-    month > 11 ||
-    day < 1 ||
-    day > 31
-  ) {
-    return null;
-  }
-
-  const resolvedYear = resolveYear(day, month, year, now);
-
-  return makeDate(resolvedYear, month, day);
-}
-
-function parseEndOfMonth(text, now) {
-  const match = text.match(
-    new RegExp(
-      `\\b(?:bis|voraussichtlich\\s+bis)\\s+(?:(?:etwa|ungefähr|ca\\.?|circa)\\s+)?Ende\\s+(${MONTH_PATTERN})(?:\\s+(\\d{4}))?`,
-      'i'
-    )
-  );
-
-  if (!match) return null;
-
-  const month = MONTHS[match[1].toLowerCase()];
-
-  if (!Number.isInteger(month)) return null;
-
-  const currentYear = new Date(now).getUTCFullYear();
-  let year = match[2] ? Number(match[2]) : currentYear;
-
-  if (!match[2] && month < new Date(now).getUTCMonth() - 1) {
-    year++;
-  }
-
-  return new Date(Date.UTC(year, month + 1, 0));
-}
-
-/**
- * Разбирает даты и определяет их назначение по контексту.
- *
- * Поддерживает:
- * ab Montag, 16. November
- * am kommenden Montag, 16. November
- * Heute, 9. November
- * vom 10.11.2026 bis 20.11.2026
- * bis etwa Ende Dezember
- *
- * Не использует первую найденную дату как начало автоматически.
- */
-function parseGermanDatesBase(text, now) {
-  const prefixPattern =
-    '(ab|seit|vom|von|bis(?:\\s+(?:etwa|ungefähr|ca\\.?|circa|zum))?|voraussichtlich\\s+bis)';
-
-  const datePattern = new RegExp(
-    `(?:\\b${prefixPattern}\\s+)?(?:${WEEKDAYS}\\s*,?\\s*)?(?:(\\d{1,2})\\.\\s*(${MONTH_PATTERN})(?:\\s+(\\d{4}))?|\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})\\b)`,
-    'gi'
-  );
-
-  const matches = [...text.matchAll(datePattern)]
-    .map((match) => {
-      const date = parseDateCandidate(match, now);
-
-      return {
-        index: match.index,
-        endIndex: match.index + match[0].length,
-        raw: match[0],
-        prefix: (match[1] || '')
-          .toLowerCase()
-          .replace(/\s+/g, ' ')
-          .trim(),
-        date
-      };
-    })
-    .filter((item) => item.date)
-    .sort((a, b) => a.index - b.index);
-
-  const result = {
-    start: null,
-    end: null
-  };
-
-  if (!matches.length) {
-    result.end = parseEndOfMonth(text, now);
-    return result;
-  }
-
-  const isStartContext = (item) => {
-    const before = text.slice(
-      Math.max(0, item.index - 100),
-      item.index
-    );
-
-    const after = text.slice(
-      item.endIndex,
-      Math.min(text.length, item.endIndex + 120)
-    );
-
-    if (/^(?:ab|seit|vom|von)$/.test(item.prefix)) {
-      return true;
-    }
-
-    if (
-      /\b(?:am\s+kommenden|am\s+nächsten|ab\s+dem|ab\s+kommenden|ab\s+nächsten|heute|morgen)\s*$/i.test(before)
-    ) {
-      return true;
-    }
-
-    if (
-      /\b(?:beginnt|beginnen|startet|starten|beginnen\s+die|starten\s+die|nimmt\s+...?\s+auf)\b/i.test(after)
-    ) {
-      return true;
-    }
-
-    if (
-      /\b(?:beginnt|beginnen|startet|starten|baubeginn|beginn\s+der\s+arbeiten)\b/i.test(before)
-    ) {
-      return true;
-    }
-
-    return false;
-  };
-
-  const isEndContext = (item) => {
-    if (
-      item.prefix === 'bis' ||
-      item.prefix === 'bis zum' ||
-      item.prefix.startsWith('bis ') ||
-      item.prefix === 'voraussichtlich bis'
-    ) {
-      return true;
-    }
-
-    const before = text.slice(
-      Math.max(0, item.index - 100),
-      item.index
-    );
-
-    return /\b(?:enden|endeten|abgeschlossen|fertiggestellt|dauern|andauern|bis zum|bis etwa|bis voraussichtlich)\s*$/i.test(before);
-  };
-
-  // Сначала обрабатываем явно обозначенные даты начала.
-  const explicitStart = matches.find(isStartContext);
-
-  if (explicitStart) {
-    result.start = explicitStart.date;
-  }
-
-  // Затем — явно обозначенные даты окончания.
-  const explicitEnd = matches.find(isEndContext);
-
-  if (explicitEnd) {
-    result.end = explicitEnd.date;
-  }
-
-  // Если начало явно найдено, следующая более поздняя дата
-  // может быть окончанием только при наличии подходящего контекста.
-  if (result.start && !result.end) {
-    const laterEnd = matches.find(
-      (item) =>
-        item.date.getTime() >= result.start.getTime() &&
-        item.index > matches.find(isStartContext).index &&
-        isEndContext(item)
-    );
-
-    if (laterEnd) {
-      result.end = laterEnd.date;
-    }
-  }
-
-  // Для заголовков вида "Sanierung ... startet" дата в тексте
-  // может быть указана отдельно от глагола.
-  // Используем её только если дата одна и заголовок явно говорит о начале.
-  if (!result.start && matches.length === 1) {
-    const titleSignalsStart =
-      /\b(startet|starten|beginnt|beginnen|baubeginn|arbeiten\s+beginnen)\b/i.test(
-        text.slice(0, Math.min(text.length, 250))
-      );
-
-    const dateHasNoEndContext = !isEndContext(matches[0]);
-
-    if (titleSignalsStart && dateHasNoEndContext) {
-      result.start = matches[0].date;
-    }
-  }
-
-  // Обрабатываем "Heute, 9. November, starten die Arbeiten".
-  // В этом случае дата находится перед глаголом.
-  if (!result.start) {
-    const todayStart = matches.find((item) => {
-      const before = text.slice(
-        Math.max(0, item.index - 35),
-        item.index
-      );
-
-      const after = text.slice(
-        item.endIndex,
-        Math.min(text.length, item.endIndex + 100)
-      );
-
-      return (
-        /\b(?:heute|morgen|am kommenden|am nächsten)\s*,?\s*$/i.test(before) &&
-        /\b(?:starten|beginnen|beginnt|startet)\b/i.test(after)
-      );
-    });
-
-    if (todayStart) {
-      result.start = todayStart.date;
-    }
-  }
-
-  // Если начало и окончание не удалось определить однозначно,
-  // не подставляем произвольные даты.
-  if (!result.end) {
-    result.end = parseEndOfMonth(text, now);
-  }
-
-  // Не допускаем окончание раньше начала.
-  if (
-    result.start &&
-    result.end &&
-    result.end.getTime() < result.start.getTime()
-  ) {
-    result.end = null;
-  }
-
-  return result;
-}
-
-function classify(text) {
-  if (CLOSURE_KEYWORDS.test(text)) {
-    return 'road_closure';
-  }
-
-  if (
-    ROADWORKS_KEYWORDS.test(text) ||
-    INFRASTRUCTURE_KEYWORDS.test(text)
-  ) {
-    return 'roadworks';
-  }
-
-  if (DISRUPTION_KEYWORDS.test(text)) {
-    return 'traffic_other';
-  }
-
-  return 'roadworks';
-}
-
-function analyzeRoadItem(item) {
-  const text = `${item.title} ${item.description}`;
-  const hasRoadKeyword = ROAD_KEYWORDS.test(text);
-  const hasStrongKeyword = STRONG_ROAD_KEYWORDS.test(text);
-  const location = extractLocation(text);
-
-  const topic = classifyTopic(text);
-  if (topic) {
-    return {
-      accepted: true,
-      reason: `topic_${topic}`,
-      street: location.streets[0] || null,
-      location,
-      category: topic,
-      topic: true
-    };
-  }
-
-  if (!hasRoadKeyword) {
-    return {
-      accepted: false,
-      reason: 'no_road_keyword',
-      street: null,
-      location,
-      category: null
-    };
-  }
-
-  if (!location.streets.length && !hasStrongKeyword) {
-    return {
-      accepted: false,
-      reason: 'no_clear_road_context',
-      street: null,
-      location,
-      category: null
-    };
-  }
-
-  if (
-    /\bverkehr\b/i.test(text) &&
-    !hasStrongKeyword &&
-    !location.streets.length
-  ) {
-    return {
-      accepted: false,
-      reason: 'generic_traffic_mention',
-      street: null,
-      location,
-      category: null
-    };
-  }
-
-  return {
-    accepted: true,
-    reason: 'road_event_detected',
-    street: location.streets[0] || null,
-    location,
-    category: classify(text)
-  };
-}
-
-function normalizeGeoPrecision(value) {
-  if (ALLOWED_GEO_PRECISIONS.has(value)) {
-    return value;
-  }
-
-  return 'street';
-}
-
-async function geocodeLocation(ctx, location) {
-  if (!location?.streets?.length || ctx.geoBudget <= 0) {
-    return null;
-  }
-
-  const points = [];
-
-  for (const street of location.streets.slice(0, 2)) {
-    if (ctx.geoBudget <= 0) break;
-
-    try {
-      const geo = await geocodeStreet(ctx, street);
-
-      if (
-        geo &&
-        !geo.pending &&
-        Number.isFinite(geo.lat) &&
-        Number.isFinite(geo.lon) &&
-        inCityBbox(geo.lat, geo.lon)
-      ) {
-        points.push({
-          lat: geo.lat,
-          lon: geo.lon,
-          district: geo.district || null,
-          precision: normalizeGeoPrecision(geo.precision)
-        });
-      } else if (geo?.pending) {
-        ctx.log(`wuppertal: geocoding pending: ${street}`);
-      }
-    } catch (error) {
-      ctx.log(`wuppertal geocode ${street}: ${error.message}`);
-    }
-  }
-
-  if (!points.length) return null;
-
-  if (points.length === 1) {
-    return {
-      ...points[0],
-      approximate: location.type !== 'single'
-    };
-  }
-
-  return {
-    lat: (points[0].lat + points[1].lat) / 2,
-    lon: (points[0].lon + points[1].lon) / 2,
-    district: points[0].district || points[1].district || null,
-    precision: 'street',
-    approximate: true
-  };
-}
-
-// «Die Arbeiten beginnen am Montag, 23. November, und werden voraussichtlich drei Wochen dauern»:
-// даты окончания нет, но есть длительность. Считаем конец = начало + срок (последний день включительно).
-const NUM_WORDS = { ein: 1, eine: 1, einen: 1, einem: 1, zwei: 2, drei: 3, vier: 4, fünf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10 };
-const DUR_N = '(\\d{1,2}|ein|eine|einen|einem|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)';
-const DUR_U = '(tag|tage|tagen|woche|wochen|monat|monate|monaten)';
-export function parseDuration(text) {
-  const a = text.match(new RegExp(`\\b${DUR_N}\\s+${DUR_U}\\b[^.\\n]{0,40}?\\b(?:dauer\\w*|lang)\\b`, 'i'));
-  const b = text.match(new RegExp(`\\b(?:dauer\\w*|bauzeit)\\b[^.\\n]{0,30}?\\b${DUR_N}\\s+${DUR_U}\\b`, 'i'));
-  // «wird die Buslinie 619 für etwa drei Monate umgeleitet»
-  const c = text.match(new RegExp(`\\bfür\\s+(?:etwa|rund|ca\\.?|circa|voraussichtlich|mindestens|insgesamt)\\s+${DUR_N}\\s+${DUR_U}\\b`, 'i'));
-  const m = a || b || c;
-  if (!m) return null;
-  const n = /^\d/.test(m[1]) ? parseInt(m[1], 10) : NUM_WORDS[m[1].toLowerCase()];
-  const u = m[2].toLowerCase();
-  const days = u.startsWith('tag') ? n : u.startsWith('woch') ? n * 7 : n * 30;
-  return days >= 1 && days <= 366 ? days : null;
-}
-export function parseGermanDates(text, now) {
-  const r = parseGermanDatesBase(text, now);
-  if (r.start && !r.end) {
-    const days = parseDuration(text);
-    if (days) r.end = new Date(r.start.getTime() + (days - 1) * DAY);
-  }
-  return r;
-}
-
-async function toEvent(ctx, item, analysis) {
-  const text = `${item.title}\n${item.description}`;
-
-  const publishedMs = Date.parse(item.pubDate || '');
-
-  const publishedAt = Number.isFinite(publishedMs)
-    ? ISO(publishedMs)
-    : null;
-
-  if (
-    Number.isFinite(publishedMs) &&
-    ctx.now - publishedMs > MAX_AGE_DAYS * DAY
-  ) {
-    return null;
-  }
-
-  const location = analysis.location;
-  const geo = await geocodeLocation(ctx, location);
-
-  const hasGeo =
-    geo &&
-    Number.isFinite(geo.lat) &&
-    Number.isFinite(geo.lon) &&
-    inCityBbox(geo.lat, geo.lon);
-
-  const { start, end } = parseGermanDates(text, ctx.now);
-
-  if (end && end.getTime() + DAY < ctx.now) {
-    return null;
-  }
-
-  // Срок считается от даты публикации (а не от «сейчас»): иначе expires_at сдвигался бы при каждом запуске,
-  // менялся бы хэш записи и событие никогда не истекало.
-  const ttlDays = analysis.topic ? TOPIC_TTL_DAYS : EVENT_TTL_DAYS;
-  const base = Number.isFinite(publishedMs) ? publishedMs : Math.floor(ctx.now / DAY) * DAY;
-  const anchor = Math.max(base, start ? start.getTime() : 0);
-  // дата окончания в тексте без времени: действует до конца этого дня
-  const expiresAt = end ? end.getTime() + DAY : anchor + ttlDays * DAY;
-
-  // уже истёкшее не сохраняем: иначе статус «мигал» бы между RECENT и EXPIRED
-  if (expiresAt <= ctx.now) return null;
-
-  const isScheduled =
-    start && start.getTime() > ctx.now;
-
-  const id = item.guid || item.url;
-
-  return {
-    source_event_id: await shortId(id),
+export function toItem(story, nowMs) {
+  if (nowMs - story.published > MAX_AGE_DAYS * DAY) return { reason: 'старше 45 дней' };
+  if (story.published > nowMs + 10 * 60000) return { reason: 'дата из будущего' };
+  const cls = classify(story.title, story.description);
+  if (!cls.category) return { reason: cls.reason };
+
+  const all = `${story.title}. ${story.description}`;
+  const { start, end } = parseGermanDates(all, nowMs);
+  if (end && end.getTime() + DAY < nowMs) return { reason: 'срок действия уже истёк' };
+  const anchor = Math.max(story.published, start ? start.getTime() : 0);
+  const expiresMs = end ? end.getTime() + DAY : anchor + TTL_DAYS * DAY;
+  if (expiresMs <= nowMs) return { reason: 'старше TTL' };
+
+  const street = extractStreet(all);
+  const district = extractDistrict(all);
+  const scheduled = !!start && start.getTime() > nowMs;
+
+  const item = {
+    source_event_id: story.id,
     scope: SCOPE,
-    publisher: 'Stadt Wuppertal',
-    title: item.title,
-    description: item.description || null,
-    category: analysis.category,
-    source_url: item.url,
-
-    latitude: hasGeo ? geo.lat : null,
-    longitude: hasGeo ? geo.lon : null,
-
-    geo_precision: hasGeo
-      ? normalizeGeoPrecision(geo.precision)
-      : 'none',
-
-    location_name: location.label || null,
-
-    district: hasGeo ? geo.district || null : null,
-
-    // «ab Montag, 16. November» / «bis Ende Dezember» — срок действия ограничения, а не время происшествия:
-    // «Произошло» у пресс-сообщений города остаётся неизвестным, срок идёт в «Действует с / до».
+    publisher: 'WSW',
+    title: truncate(story.title, 200),
+    description: truncate(story.description, DESCRIPTION_LIMIT) || null,
+    category: cls.category,
+    source_url: story.url,
+    geo_precision: !street && district ? 'district' : 'none',
+    district: !street && district ? district : null,
+    location_name: street || district || null,
+    // «Произошло» у объявлений WSW неизвестно: даты начала и конца — это срок действия изменения
     event_time: null,
     time_precision: 'unknown',
     valid_from: start ? ISO(start.getTime()) : null,
     valid_from_precision: start ? 'day' : null,
     valid_until: end ? ISO(end.getTime()) : null,
     valid_until_precision: end ? 'day' : null,
-
-    published_at: publishedAt,
-    expires_at: ISO(expiresAt),
-
-    status: isScheduled ? 'ACTIVE' : 'RECENT',
-
-    status_reason: isScheduled
-      ? 'official_city_scheduled_roadwork'
-      : 'official_city_traffic_press_release',
-
-    confidence: hasGeo
-      ? (geo.approximate ? 0.78 : 0.9)
-      : 0.7,
-
+    published_at: ISO(story.published),
+    expires_at: ISO(expiresMs),
+    status: scheduled ? 'ACTIVE' : 'RECENT',
+    status_reason: scheduled ? 'official_wsw_scheduled_change' : 'official_wsw_notice',
+    confidence: street ? 0.8 : 0.7,
     is_verified: 1
   };
+
+  item.enrich = async (ctx) => {
+    if (!street) return;
+    const g = await geocodeStreet(ctx, street);
+    if (!g) { item.geocode_attempts = 1; return; }
+    if (g.pending) return; // позже повторит retryGeocoding
+    item.geo_precision = g.precision;
+    item.district = g.district || district || null;
+    if (g.precision === 'street') { item.latitude = g.lat; item.longitude = g.lon; }
+  };
+  return { item };
 }
 
-async function fetchFeed() {
-  const response = await fetchWithRetry(FEED_URL, {
-    timeoutMs: 12000,
-    retries: 2,
-    backoffMs: 800,
-    headers: {
-      accept: 'application/rss+xml, application/xml, text/xml',
-      'user-agent': 'WuppertalLive/1.0'
-    }
+async function fetchFeed(url) {
+  const res = await fetchWithRetry(url, {
+    timeoutMs: 12000, retries: 2, backoffMs: 800,
+    headers: { accept: 'application/atom+xml, application/rss+xml, application/xml, text/xml', 'user-agent': 'WuppertalLive/1.0' }
   });
-
-  if (!response.ok) {
-    throw new Error(`Wuppertal RSS HTTP ${response.status}`);
-  }
-
-  const xml = await response.text();
-
-  if (!/<(?:rss|feed)\b/i.test(xml)) {
-    throw new Error('Wuppertal RSS returned unexpected content');
-  }
-
-  if (xml.length < 500) {
-    throw new Error('Wuppertal RSS returned unexpectedly small content');
-  }
-
+  if (!res.ok) throw new Error(`WSW feed HTTP ${res.status}`);
+  const xml = await res.text();
+  if (!/<(?:rss|feed)\b/i.test(xml)) throw new Error('WSW feed returned unexpected content');
   return xml;
 }
 
-function analyzeFeed(items) {
-  const accepted = [];
-  const rejected = [];
-
-  for (const item of items) {
-    if (isBoilerplateItem(item)) {
-      rejected.push({
-        title: item.title,
-        reason: 'boilerplate'
-      });
-
-      continue;
-    }
-
-    const analysis = analyzeRoadItem(item);
-
-    if (analysis.accepted) {
-      accepted.push({ item, analysis });
-    } else {
-      rejected.push({
-        title: item.title,
-        reason: analysis.reason
-      });
-    }
-  }
-
-  return { accepted, rejected };
-}
-
 export async function run(ctx) {
-  const xml = await fetchFeed();
-  const feedItems = parseFeed(xml);
-
-  if (!feedItems.length) {
-    throw new Error('Wuppertal RSS contains no items');
+  const stories = new Map();
+  const errors = [];
+  let okFeeds = 0;
+  for (const url of FEEDS) {
+    try {
+      for (const s of parseFeed(await fetchFeed(url))) if (!stories.has(s.url)) stories.set(s.url, s);
+      okFeeds++;
+    } catch (e) { errors.push(`${url}: ${e.message}`); ctx.log(`wsw: ${e.message}`); }
   }
+  if (!okFeeds) throw new Error(`WSW: ни одна лента не доступна (${errors.join('; ')})`);
 
-  const { accepted, rejected } = analyzeFeed(feedItems);
-
-  const events = [];
-
-  for (const { item, analysis } of accepted) {
-    const event = await toEvent(ctx, item, analysis);
-
-    if (event) {
-      events.push(event);
-    }
+  const items = [], rejects = {};
+  for (const s of stories.values()) {
+    const r = toItem(s, ctx.now);
+    if (r.item) items.push(r.item); else rejects[r.reason] = (rejects[r.reason] || 0) + 1;
   }
-
-  const stats = await syncSource(ctx, meta.id, events, {
-    resolveMissing: false
-  });
-
+  const stats = await syncSource(ctx, meta.id, items, { resolveMissing: false });
   return {
     ...stats,
-
-    rss_items: feedItems.length,
-    road_items: accepted.length,
-    rejected_items: rejected.length,
-    events_created_or_updated: events.length,
-
-    geocoded: events.filter(
-      (event) =>
-        event.geo_precision &&
-        event.geo_precision !== 'none'
-    ).length,
-
-    without_coordinates: events.filter(
-      (event) =>
-        event.latitude === null ||
-        event.longitude === null
-    ).length,
-
-    sample: accepted.slice(0, 5).map(({ item, analysis }) => ({
-      title: item.title,
-      street: analysis.street,
-      location_type: analysis.location.type,
-      location: analysis.location.label,
-      category: analysis.category,
-      url: item.url
-    }))
-  };
-}
-
-export async function probe() {
-  const xml = await fetchFeed();
-  const items = parseFeed(xml);
-
-  const { accepted, rejected } = analyzeFeed(items);
-
-  const now = Date.now();
-
-  const recent = items.filter((item) => {
-    const published = Date.parse(item.pubDate || '');
-
-    return (
-      !Number.isFinite(published) ||
-      now - published <= MAX_AGE_DAYS * DAY
-    );
-  });
-
-  return {
-    url: FEED_URL,
-    status: 200,
-
-    rss_items: items.length,
-    recent_items: recent.length,
-    road_items: accepted.length,
-    rejected_items: rejected.length,
-
-    road_samples: accepted.slice(0, 10).map(({ item, analysis }) => ({
-      title: item.title,
-      description: truncate(item.description, 500),
-
-      street: analysis.street,
-      location_type: analysis.location.type,
-      location: analysis.location.label,
-
-      category: analysis.category,
-      pubDate: item.pubDate,
-      url: item.url
-    })),
-
-    rejected_samples: rejected.slice(0, 10)
+    feeds_ok: okFeeds, feed_items: stories.size, accepted: items.length, rejected: rejects,
+    sample: items.slice(0, 5).map((i) => ({ title: i.title, category: i.category, place: i.location_name, from: i.valid_from, until: i.valid_until }))
   };
 }
