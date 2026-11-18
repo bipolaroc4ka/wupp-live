@@ -47,7 +47,10 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* хранилище недоступно: работаем без него */ } }
   };
   const state = {
-    lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2') : 'de', // основной язык — немецкий; новый ключ сбрасывает старый сохранённый выбор
+    // Немецкий — основной язык. Русский включается сам только при первом заходе, если язык браузера русский;
+    // явный выбор пользователя запоминается (ключ wl_lang2) и сильнее любой догадки.
+    lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2')
+      : ((navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']).some((l) => /^ru\b/i.test(l)) ? 'ru' : 'de'),
     themePref: ['auto', 'light', 'dark'].includes(store.get('wl_theme')) ? store.get('wl_theme') : 'auto',
     hours: DEFAULT_HOURS,
     groupsOn: new Set(GROUPS),
@@ -124,6 +127,8 @@
   TG.ready.then((ok) => {
     if (!ok) return;
     setAppH(); applyTheme();
+    // язык интерфейса Telegram — только если пользователь ещё не выбирал язык сам
+    if (!I18N[store.get('wl_lang2')] && TG.languageCode() === 'ru' && state.lang !== 'ru') { state.lang = 'ru'; applyI18n(); render(); }
     TG.onTheme(applyTheme);
     TG.onViewport(setAppH);
   });
@@ -246,6 +251,10 @@
     $('#dClose').setAttribute('aria-label', t('close'));
     $('#aboutClose').setAttribute('aria-label', t('close'));
     $('#dShow').textContent = t('showOnMap');
+    $('#wxClose').setAttribute('aria-label', t('close'));
+    $('#wx').setAttribute('aria-label', t('wxOpen'));
+    $('#wxTitle').textContent = t('wxTitle');
+    renderWeather();
     $('#dCopy').setAttribute('aria-label', t('copy'));
     $('#dShare').setAttribute('aria-label', t('share'));
     setKids($('#dCopy'), ICON.make('copy', 18), t('copy'));
@@ -840,7 +849,7 @@
   window.addEventListener('resize', updateLayout);
 
   // ---------- выпадающие панели, «Назад» ----------
-  const DROPS = [['#filterPanel', '#filterBtn'], ['#menu', '#menuBtn']];
+  const DROPS = [['#filterPanel', '#filterBtn'], ['#menu', '#menuBtn'], ['#wxCard', '#wx']];
   function closeDropdowns(except) {
     for (const [p, b] of DROPS) {
       if (p === except) continue;
@@ -965,6 +974,8 @@
   // ---------- события интерфейса ----------
   $('#filterBtn').addEventListener('click', () => toggleDrop('#filterPanel', '#filterBtn'));
   $('#menuBtn').addEventListener('click', () => toggleDrop('#menu', '#menuBtn'));
+  $('#wx').addEventListener('click', () => toggleDrop('#wxCard', '#wx'));
+  $('#wxClose').addEventListener('click', () => closeDropdowns());
   $('#miAbout').addEventListener('click', openAbout);
   $('#freshness').addEventListener('click', openAbout);
   $('#aboutClose').addEventListener('click', closeAbout);
@@ -975,7 +986,7 @@
     if (!anyDropOpen()) return;
     // элемент мог быть пересобран обработчиком (смена языка/темы) и уже не в документе: это не клик «снаружи»
     if (!e.target.isConnected) return;
-    if (e.target.closest('#filterPanel, #menu, #filterBtn, #menuBtn')) return;
+    if (e.target.closest('#filterPanel, #menu, #filterBtn, #menuBtn, #wxCard, #wx')) return;
     closeDropdowns();
   });
   // Копирование и «Поделиться»: текст карточки (заголовок, описание, место, ссылка на источник)
@@ -1067,9 +1078,56 @@
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { /* PWA необязательна */ });
   }
 
+  // ---------- погода (DWD через наш API, кэш 10 минут) ----------
+  const WX_ICON = { 'clear-day': 'sun', 'clear-night': 'moon', 'partly-cloudy-day': 'suncloud', 'partly-cloudy-night': 'cloud', cloudy: 'cloud', fog: 'fog', wind: 'wind', rain: 'rain', sleet: 'rain', snow: 'snow', hail: 'snow', thunderstorm: 'bolt' };
+  const wxState = { data: null, at: 0 };
+  const WX_MAX_AGE = 3 * 3600e3; // данные старше 3 часов не показываем
+  const wxNum = (v, d = 0) => (v == null ? '–' : Number(v).toLocaleString(locale(), { maximumFractionDigits: d }));
+  const wxIcon = (name, size) => ICON.make(WX_ICON[name] || 'cloud', size, 1.8);
+  const wxCond = (c) => t('wx_' + String(c && c.icon || 'none').replaceAll('-', '_'));
+  const wxDir = (deg) => (deg == null ? '' : t('wxDirs')[Math.round(deg / 45) % 8]);
+  function renderWeather() {
+    const btn = $('#wx'), d = wxState.data;
+    const fresh = d && Date.now() - wxState.at < WX_MAX_AGE;
+    btn.hidden = !fresh || d.current.temp == null;
+    if (btn.hidden) { if (!$('#wxCard').hidden) closeDropdowns(); return; }
+    const c = d.current;
+    setKids(btn, wxIcon(c.icon, 20), `${wxNum(c.temp)}°`, d.from === 'forecast' ? el('span', { class: 'fc', text: t('wxForecast') }) : null);
+    setKids($('#wxIco'), wxIcon(c.icon, 40));
+    $('#wxTemp').textContent = `${wxNum(c.temp, 1)} °C`;
+    $('#wxCond').textContent = wxCond(c);
+    const cell = (label, value, sub) => el('div', {}, el('dt', { text: label }), el('dd', {}, value, sub ? el('small', { text: sub }) : null));
+    const rows = [];
+    if (c.wind_kmh != null) rows.push(cell(t('wxWind'), [`${wxNum(c.wind_kmh)} ${t('kmh')}`, wxDir(c.wind_dir)].filter(Boolean).join(', '), c.gust_kmh != null && c.gust_kmh > c.wind_kmh + 5 ? t('wxGust', { v: wxNum(c.gust_kmh) }) : null));
+    if (c.humidity != null) rows.push(cell(t('wxHum'), `${wxNum(c.humidity)} %`));
+    if (c.precip_mm != null) rows.push(cell(t('wxRain'), `${wxNum(c.precip_mm, 1)} ${t('mm')}`));
+    if (c.pressure != null) rows.push(cell(t('wxPress'), `${wxNum(c.pressure)} hPa`));
+    $('#wxGrid').replaceChildren(...rows);
+    const hourFmt = dtf({ hour: '2-digit', minute: '2-digit' });
+    $('#wxFc').replaceChildren(...d.forecast.slice(0, 6).map((f) => el('div', {},
+      el('div', { class: 'h', text: hourFmt.format(new Date(f.t)) }), wxIcon(f.icon, 20), el('div', { text: `${wxNum(f.temp)}°` }),
+      el('div', { class: 'p', text: f.precip_prob != null && f.precip_prob >= 20 ? `${wxNum(f.precip_prob)} %` : '' }))));
+    const parts = [];
+    if (d.from === 'forecast') parts.push(t('wxFromFc'));
+    else if (d.station) parts.push(t('wxStation', { name: d.station.name, km: wxNum(d.station.distance_km) }));
+    parts.push(t('wxAgo', { when: rel(c.t) }), t('wxSrc'));
+    $('#wxSrc').textContent = parts.map((x) => (/[.!]$/.test(x) ? x : x + '.')).join(' ');
+  }
+  async function loadWeather() {
+    if (!CFG.API_BASE) return;
+    try {
+      const d = await api('/api/weather');
+      if (d && d.current && Number.isFinite(d.current.temp) && Array.isArray(d.forecast)) { wxState.data = d; wxState.at = Date.now(); }
+    } catch { /* остаётся прежнее значение, пока оно не старше 3 часов */ }
+    renderWeather();
+  }
+  setInterval(() => { if (!document.hidden) loadWeather(); }, 10 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - wxState.at > 10 * 60 * 1000) loadWeather(); });
+
   // ---------- старт ----------
   applyI18n();
   render();
   loadCacheOnce();
   load();
+  loadWeather();
 })();
