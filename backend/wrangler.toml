@@ -47,7 +47,7 @@ PRESS_TTL_HOURS = "168"
 # WF Wülfrath, SP Sprockhövel, GB Gevelsberg, SW Schwelm, EN Ennepetal, ME Mettmann, ER Erkrath, HT Hattingen, WT Wetter (Ruhr).
 # Дальше от города, по желанию: HI Hilden, LF Langenfeld, RA Ratingen, HD Herdecke. «W» — только Wuppertal.
 # Ленты, в которых не включён ни один город, не запрашиваются.
-PRESS_REGIONS = "W,SG,RS,VE,HA,WF,SP,GB,SW,EN,ME,ER,HT,WT"
+PRESS_REGIONS = "W"
 
 # Автобаны, чьи данные запрашиваются (затем отфильтровываются по границам Wuppertal).
 AUTOBAHN_ROADS = "A1,A46,A535,A43"
