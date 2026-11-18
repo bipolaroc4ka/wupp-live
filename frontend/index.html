@@ -52,13 +52,18 @@
   </header>
 
   <section id="sheet" class="peek" aria-label="Events">
-    <div id="sheetHandle" class="handle" role="button" tabindex="0" aria-label="Toggle list"><span></span></div>
-    <div class="tabs" id="tabs" role="tablist"></div>
+    <div id="sheetHead" class="sheet-head">
+      <div id="sheetHandle" class="handle" role="button" tabindex="0" aria-label="Toggle list" aria-expanded="false"><span></span></div>
+      <div class="tabrow">
+        <div class="tabs" id="tabs" role="tablist"></div>
+        <button id="sheetToggle" class="iconbtn sm" type="button"></button>
+      </div>
+    </div>
     <ul id="list" class="list"></ul>
   </section>
 
   <article id="detail" class="detail" hidden role="dialog" aria-modal="false" aria-labelledby="dTitle">
-    <div class="grip" aria-hidden="true"></div>
+    <div class="grip" id="dGrip" aria-hidden="true"></div>
     <button id="dClose" class="closebtn" type="button"></button>
     <div class="d-badges" id="dBadges"></div>
     <h2 id="dTitle"></h2>
