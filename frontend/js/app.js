@@ -255,6 +255,8 @@
     setKids($('#menuBtn'), ICON.make('more', 22));
     setKids($('#dClose'), ICON.make('close', 22));
     setKids($('#aboutClose'), ICON.make('close', 22));
+    setKids($('#sheetToggle'), ICON.make('chevron', 20));
+    syncSheetUi();
 
     const ds = $('#districtSel');
     ds.replaceChildren(el('option', { value: '', text: t('allDistricts') }),
@@ -613,30 +615,166 @@
   // ---------- нижняя панель ----------
   const isDesktop = () => window.matchMedia('(min-width: 900px)').matches;
   const SHEET_STATES = ['peek', 'half', 'full'];
-  function setSheet(s) {
-    const sh = $('#sheet');
-    sh.classList.remove(...SHEET_STATES);
-    sh.classList.add(s);
+  const sheetEl = $('#sheet');
+  const curSheet = () => SHEET_STATES.find((s) => sheetEl.classList.contains(s)) || 'peek';
+  function syncSheetUi() {
+    const s = curSheet();
+    $('#sheetHandle').setAttribute('aria-expanded', String(s !== 'peek'));
+    $('#sheetToggle').setAttribute('aria-label', t(s === 'full' ? 'collapseList' : 'expandList'));
   }
-  const curSheet = () => SHEET_STATES.find((s) => $('#sheet').classList.contains(s)) || 'peek';
+  function setSheet(s) {
+    sheetEl.classList.remove(...SHEET_STATES);
+    sheetEl.classList.add(s);
+    syncSheetUi();
+  }
 
+  // Панель следует за пальцем и «прилипает» к одному из трёх положений: учитывается и скорость броска, и расстояние.
+  // Тянуть можно за шапку (ручка и вкладки) и за сам список: свайп вверх от верха списка раскрывает панель,
+  // свайп вниз от верха списка сворачивает. Кнопка-стрелка делает то же без жестов.
   (function initSheetDrag() {
-    const h = $('#sheetHandle');
-    let y0 = null;
-    h.addEventListener('pointerdown', (e) => { y0 = e.clientY; try { h.setPointerCapture(e.pointerId); } catch { /* не критично */ } });
-    h.addEventListener('pointerup', (e) => {
-      if (y0 == null) return;
-      const dy = e.clientY - y0; y0 = null;
-      const i = SHEET_STATES.indexOf(curSheet());
-      if (Math.abs(dy) < 8) setSheet(i === 0 ? 'half' : 'peek');
-      else if (dy < -30) setSheet(SHEET_STATES[Math.min(i + 1, 2)]);
-      else if (dy > 30) setSheet(SHEET_STATES[Math.max(i - 1, 0)]);
+    const head = $('#sheetHead'), list = $('#list');
+    let d = null; // активное перетаскивание
+    const HEIGHTS = () => {
+      // высоты положений меряем по самому CSS, чтобы они всегда совпадали с классами peek/half/full
+      const cur = curSheet();
+      sheetEl.style.transition = 'none';
+      const out = {};
+      for (const s of SHEET_STATES) { sheetEl.classList.remove(...SHEET_STATES); sheetEl.classList.add(s); out[s] = sheetEl.offsetHeight; }
+      sheetEl.classList.remove(...SHEET_STATES); sheetEl.classList.add(cur);
+      void sheetEl.offsetHeight; // применить возврат к исходному положению без анимации, иначе высота «поедет» от full
+      sheetEl.style.transition = '';
+      return out;
+    };
+    function start(y) {
+      const from = curSheet();
+      d = { y0: y, from, snaps: HEIGHTS(), h0: sheetEl.offsetHeight, pts: [{ y, t: performance.now() }] };
+      sheetEl.classList.add('dragging');
+    }
+    function move(y) {
+      if (!d) return;
+      const h = Math.min(d.snaps.full, Math.max(d.snaps.peek, d.h0 + (d.y0 - y)));
+      sheetEl.style.height = h + 'px';
+      d.pts.push({ y, t: performance.now() });
+      if (d.pts.length > 4) d.pts.shift();
+    }
+    function end() {
+      if (!d) return;
+      const h = sheetEl.offsetHeight;
+      const a = d.pts[0], b = d.pts[d.pts.length - 1];
+      const v = b.t > a.t ? (b.y - a.y) / (b.t - a.t) : 0; // px/мс, положительная — вниз
+      const order = SHEET_STATES.map((s) => [s, d.snaps[s]]);
+      let target;
+      if (Math.abs(v) > 0.4) {
+        // бросок: ближайшее положение в сторону движения
+        target = v < 0
+          ? (order.find(([, px]) => px > h + 8) || order[2])[0]
+          : ([...order].reverse().find(([, px]) => px < h - 8) || order[0])[0];
+      } else {
+        target = order.reduce((best, cur) => (Math.abs(cur[1] - h) < Math.abs(best[1] - h) ? cur : best))[0];
+      }
+      sheetEl.classList.remove('dragging');
+      sheetEl.style.height = '';
+      setSheet(target);
+      if (target !== d.from) TG.haptic('light');
+      d = null;
+    }
+
+    // шапка: указатель (мышь и палец). Движение ловим на document: мышь уходит выше шапки, а захват указателя
+    // на время клика по вкладкам включать нельзя (клик перестал бы доходить до кнопки).
+    let down = null, justDragged = false;
+    const onMove = (e) => {
+      if (!down || down.id !== e.pointerId) return;
+      if (!down.on) {
+        if (Math.abs(e.clientY - down.y) < 6) return;
+        down.on = true;
+        start(e.clientY);
+      }
+      move(e.clientY);
+    };
+    const finish = (e) => {
+      if (!down || down.id !== e.pointerId) return;
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      if (down.on) { end(); justDragged = true; setTimeout(() => { justDragged = false; }, 0); }
+      down = null;
+    };
+    head.addEventListener('pointerdown', (e) => {
+      if (isDesktop() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      down = { y: e.clientY, id: e.pointerId, on: false };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', finish);
+      document.addEventListener('pointercancel', finish);
+    });
+    head.addEventListener('click', (e) => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+    // список: передача жеста панели, пока список прокручен до верха
+    let lt = null;
+    list.addEventListener('touchstart', (e) => {
+      lt = !isDesktop() && e.touches.length === 1 ? { y: e.touches[0].clientY, on: false } : null;
+    }, { passive: true });
+    list.addEventListener('touchmove', (e) => {
+      if (!lt) return;
+      const y = e.touches[0].clientY, dy = y - lt.y;
+      if (!lt.on) {
+        const cur = curSheet();
+        const takeUp = dy < -6 && cur !== 'full' && list.scrollTop <= 0;
+        const takeDown = dy > 6 && cur !== 'peek' && list.scrollTop <= 0;
+        if (!takeUp && !takeDown) return;
+        lt.on = true;
+        start(y);
+      }
+      if (e.cancelable) e.preventDefault();
+      move(y);
+    }, { passive: false });
+    const lend = () => { if (lt && lt.on) end(); lt = null; };
+    list.addEventListener('touchend', lend);
+    list.addEventListener('touchcancel', lend);
+
+    // ручка и стрелка работают и без жестов (мышь, клавиатура, вспомогательные технологии)
+    $('#sheetHandle').addEventListener('click', () => { setSheet(curSheet() === 'peek' ? 'half' : 'peek'); TG.haptic('light'); });
+    $('#sheetToggle').addEventListener('click', () => {
+      const s = curSheet();
+      setSheet(s === 'peek' ? 'half' : s === 'half' ? 'full' : 'half');
       TG.haptic('light');
     });
-    h.addEventListener('pointercancel', () => { y0 = null; });
-    h.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSheet(curSheet() === 'peek' ? 'half' : 'peek'); }
+    $('#sheetHandle').addEventListener('keydown', (e) => {
+      const i = SHEET_STATES.indexOf(curSheet());
+      if (e.key === 'ArrowUp') { e.preventDefault(); setSheet(SHEET_STATES[Math.min(i + 1, 2)]); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); setSheet(SHEET_STATES[Math.max(i - 1, 0)]); }
+      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSheet(curSheet() === 'peek' ? 'half' : 'peek'); }
     });
+  })();
+
+  // Карточка события: потянуть за верх вниз — закрыть и вернуться к списку
+  (function initDetailDrag() {
+    const det = $('#detail'), grip = $('#dGrip');
+    let s = null;
+    grip.addEventListener('pointerdown', (e) => {
+      if (isDesktop()) return;
+      s = { y: e.clientY, id: e.pointerId, dy: 0, pts: [{ y: e.clientY, t: performance.now() }] };
+      try { grip.setPointerCapture(e.pointerId); } catch { /* не критично */ }
+      det.classList.add('dragging');
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!s || s.id !== e.pointerId) return;
+      s.dy = Math.max(0, e.clientY - s.y);
+      det.style.transform = `translateY(${s.dy}px)`;
+      s.pts.push({ y: e.clientY, t: performance.now() });
+      if (s.pts.length > 4) s.pts.shift();
+    });
+    const done = (e) => {
+      if (!s || s.id !== e.pointerId) return;
+      const a = s.pts[0], b = s.pts[s.pts.length - 1];
+      const v = b.t > a.t ? (b.y - a.y) / (b.t - a.t) : 0;
+      const close = s.dy > 90 || v > 0.5;
+      s = null;
+      det.classList.remove('dragging');
+      det.style.transform = '';
+      if (close) closeDetail();
+    };
+    grip.addEventListener('pointerup', done);
+    grip.addEventListener('pointercancel', done);
   })();
 
   // Высота верхней панели нужна боковой панели на десктопе и для режима full на телефоне.
