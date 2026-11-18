@@ -869,11 +869,12 @@ const DUR_U = '(tag|tage|tagen|woche|wochen|monat|monate|monaten)';
 export function parseDuration(text) {
   const a = text.match(new RegExp(`\\b${DUR_N}\\s+${DUR_U}\\b[^.\\n]{0,40}?\\b(?:dauer\\w*|lang)\\b`, 'i'));
   const b = text.match(new RegExp(`\\b(?:dauer\\w*|bauzeit)\\b[^.\\n]{0,30}?\\b${DUR_N}\\s+${DUR_U}\\b`, 'i'));
-  const m = a || b;
+  // «wird die Buslinie 619 für etwa drei Monate umgeleitet»
+  const c = text.match(new RegExp(`\\bfür\\s+(?:etwa|rund|ca\\.?|circa|voraussichtlich|mindestens|insgesamt)\\s+${DUR_N}\\s+${DUR_U}\\b`, 'i'));
+  const m = a || b || c;
   if (!m) return null;
-  const idx = a ? [1, 2] : [1, 2];
-  const n = /^\d/.test(m[idx[0]]) ? parseInt(m[idx[0]], 10) : NUM_WORDS[m[idx[0]].toLowerCase()];
-  const u = m[idx[1]].toLowerCase();
+  const n = /^\d/.test(m[1]) ? parseInt(m[1], 10) : NUM_WORDS[m[1].toLowerCase()];
+  const u = m[2].toLowerCase();
   const days = u.startsWith('tag') ? n : u.startsWith('woch') ? n * 7 : n * 30;
   return days >= 1 && days <= 366 ? days : null;
 }
