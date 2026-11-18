@@ -262,6 +262,7 @@ async function handleAdmin(req, env, url, path) {
     if (action === 'probe' && req.method === 'GET') {
       try {
         const ctx = { env, now: Date.now(), geoBudget: 0, lastGeoAt: 0, log: () => {} };
+        if (typeof SOURCES[id].probe !== 'function') return { __status: 501, error: `у источника ${id} нет пробы` };
         return await SOURCES[id].probe(ctx);
       } catch (e) { return { __status: 502, error: e.message }; }
     }
