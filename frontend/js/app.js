@@ -47,7 +47,10 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* хранилище недоступно: работаем без него */ } }
   };
   const state = {
-    lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2') : 'de', // основной язык — немецкий; новый ключ сбрасывает старый сохранённый выбор
+    // Немецкий — основной язык. Русский включается сам только при первом заходе, если язык браузера русский;
+    // явный выбор пользователя запоминается (ключ wl_lang2) и сильнее любой догадки.
+    lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2')
+      : ((navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']).some((l) => /^ru\b/i.test(l)) ? 'ru' : 'de'),
     themePref: ['auto', 'light', 'dark'].includes(store.get('wl_theme')) ? store.get('wl_theme') : 'auto',
     hours: DEFAULT_HOURS,
     groupsOn: new Set(GROUPS),
@@ -124,6 +127,8 @@
   TG.ready.then((ok) => {
     if (!ok) return;
     setAppH(); applyTheme();
+    // язык интерфейса Telegram — только если пользователь ещё не выбирал язык сам
+    if (!I18N[store.get('wl_lang2')] && TG.languageCode() === 'ru' && state.lang !== 'ru') { state.lang = 'ru'; applyI18n(); render(); }
     TG.onTheme(applyTheme);
     TG.onViewport(setAppH);
   });
