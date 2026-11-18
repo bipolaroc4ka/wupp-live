@@ -25,7 +25,11 @@ window.WL_TG = (() => {
       safe(() => W.ready());
       safe(() => W.expand());
       // Свайп вниз по странице закрывал бы приложение при перетаскивании нижней панели.
-      if (at('7.7')) { safe(() => W.disableVerticalSwipes()); api.swipesLocked = true; }
+      if (at('7.7')) {
+        safe(() => W.disableVerticalSwipes()); api.swipesLocked = true;
+        // клиент может сбросить настройку при смене размера окна: подтверждаем её снова
+        safe(() => W.onEvent('viewportChanged', () => safe(() => W.disableVerticalSwipes())));
+      }
       resolve(true);
     };
     s.onerror = () => resolve(false);
@@ -73,6 +77,12 @@ window.WL_TG = (() => {
       else W.openLink(url);
       return true;
     } catch { return false; }
+  };
+
+  // «Поделиться» через окно выбора чата Telegram
+  api.share = (url, text) => {
+    if (!W || !W.openTelegramLink) return false;
+    try { W.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text || '')); return true; } catch { return false; }
   };
 
   return api;
