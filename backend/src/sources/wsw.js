@@ -159,6 +159,30 @@ async function fetchFeed(url) {
   return xml;
 }
 
+// Проба для админки: по каждой ленте — статус и размер, по каждой записи — принята или причина отказа. Ничего не сохраняет.
+export async function probe(ctx) {
+  const now = ctx && ctx.now ? ctx.now : Date.now();
+  const feeds = [];
+  for (const url of FEEDS) {
+    const f = { url };
+    try {
+      const xml = await fetchFeed(url);
+      const stories = parseFeed(xml);
+      f.status = 200; f.xml_bytes = xml.length; f.format = /<feed\b/i.test(xml) ? 'Atom' : 'RSS'; f.entries = stories.length;
+      f.items = stories.map((s) => {
+        const r = toItem(s, now);
+        return {
+          title: s.title, published: new Date(s.published).toISOString(), url: s.url,
+          accepted: !!r.item, reason: r.item ? null : r.reason,
+          ...(r.item ? { category: r.item.category, place: r.item.location_name, valid_from: r.item.valid_from, valid_until: r.item.valid_until, expires_at: r.item.expires_at } : {})
+        };
+      });
+    } catch (e) { f.error = e.message; }
+    feeds.push(f);
+  }
+  return { feeds, accepted: feeds.reduce((n, f) => n + (f.items || []).filter((i) => i.accepted).length, 0) };
+}
+
 export async function run(ctx) {
   const stories = new Map();
   const errors = [];
