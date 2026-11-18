@@ -47,7 +47,7 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* хранилище недоступно: работаем без него */ } }
   };
   const state = {
-    lang: I18N[store.get('wl_lang')] ? store.get('wl_lang') : 'de', // по умолчанию немецкий, выбор запоминается
+    lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2') : 'de', // основной язык — немецкий; новый ключ сбрасывает старый сохранённый выбор
     themePref: ['auto', 'light', 'dark'].includes(store.get('wl_theme')) ? store.get('wl_theme') : 'auto',
     hours: DEFAULT_HOURS,
     groupsOn: new Set(GROUPS),
@@ -67,7 +67,7 @@
 
   const $ = (s) => document.querySelector(s);
   const t = (k, vars) => {
-    let s = (I18N[state.lang] && I18N[state.lang][k]) ?? I18N.ru[k] ?? k;
+    let s = (I18N[state.lang] && I18N[state.lang][k]) ?? I18N.de[k] ?? I18N.ru[k] ?? k;
     if (vars) for (const [a, b] of Object.entries(vars)) s = s.replaceAll(`{${a}}`, b);
     return s;
   };
@@ -278,7 +278,7 @@
         return b;
       }));
     $('#langSeg').replaceChildren(
-      seg('language', [['ru', 'Русский'], ['de', 'Deutsch']], state.lang, setLang),
+      seg('language', [['de', 'Deutsch'], ['ru', 'Русский']], state.lang, setLang),
       seg('theme', [['auto', t('themeAuto')], ['light', t('themeLight')], ['dark', t('themeDark')]], state.themePref, setThemePref));
     setKids($('#miAbout'), ICON.make('info', 20), t('about'));
   }
@@ -286,7 +286,7 @@
   function setLang(l) {
     if (state.lang === l) return;
     state.lang = l;
-    store.set('wl_lang', l);
+    store.set('wl_lang2', l);
     applyI18n(); render();
     if (!$('#about').hidden) openAbout();
   }
