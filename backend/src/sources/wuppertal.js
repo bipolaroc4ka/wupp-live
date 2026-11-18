@@ -542,7 +542,7 @@ function parseEndOfMonth(text, now) {
  *
  * Не использует первую найденную дату как начало автоматически.
  */
-function parseGermanDates(text, now) {
+function parseGermanDatesBase(text, now) {
   const prefixPattern =
     '(ab|seit|vom|von|bis(?:\\s+(?:etwa|ungefähr|ca\\.?|circa|zum))?|voraussichtlich\\s+bis)';
 
@@ -859,6 +859,31 @@ async function geocodeLocation(ctx, location) {
     precision: 'street',
     approximate: true
   };
+}
+
+// «Die Arbeiten beginnen am Montag, 23. November, und werden voraussichtlich drei Wochen dauern»:
+// даты окончания нет, но есть длительность. Считаем конец = начало + срок (последний день включительно).
+const NUM_WORDS = { ein: 1, eine: 1, einen: 1, einem: 1, zwei: 2, drei: 3, vier: 4, fünf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10 };
+const DUR_N = '(\\d{1,2}|ein|eine|einen|einem|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)';
+const DUR_U = '(tag|tage|tagen|woche|wochen|monat|monate|monaten)';
+export function parseDuration(text) {
+  const a = text.match(new RegExp(`\\b${DUR_N}\\s+${DUR_U}\\b[^.\\n]{0,40}?\\b(?:dauer\\w*|lang)\\b`, 'i'));
+  const b = text.match(new RegExp(`\\b(?:dauer\\w*|bauzeit)\\b[^.\\n]{0,30}?\\b${DUR_N}\\s+${DUR_U}\\b`, 'i'));
+  const m = a || b;
+  if (!m) return null;
+  const idx = a ? [1, 2] : [1, 2];
+  const n = /^\d/.test(m[idx[0]]) ? parseInt(m[idx[0]], 10) : NUM_WORDS[m[idx[0]].toLowerCase()];
+  const u = m[idx[1]].toLowerCase();
+  const days = u.startsWith('tag') ? n : u.startsWith('woch') ? n * 7 : n * 30;
+  return days >= 1 && days <= 366 ? days : null;
+}
+export function parseGermanDates(text, now) {
+  const r = parseGermanDatesBase(text, now);
+  if (r.start && !r.end) {
+    const days = parseDuration(text);
+    if (days) r.end = new Date(r.start.getTime() + (days - 1) * DAY);
+  }
+  return r;
 }
 
 async function toEvent(ctx, item, analysis) {
