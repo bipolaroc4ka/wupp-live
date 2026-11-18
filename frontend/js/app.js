@@ -246,6 +246,10 @@
     $('#dClose').setAttribute('aria-label', t('close'));
     $('#aboutClose').setAttribute('aria-label', t('close'));
     $('#dShow').textContent = t('showOnMap');
+    $('#dCopy').setAttribute('aria-label', t('copy'));
+    $('#dShare').setAttribute('aria-label', t('share'));
+    setKids($('#dCopy'), ICON.make('copy', 18), t('copy'));
+    setKids($('#dShare'), ICON.make('share', 18), t('share'));
     $('#aboutTitle').textContent = t('aboutTitle');
     $('#lnkImpressum').textContent = t('impressum');
     $('#lnkPrivacy').textContent = t('privacy');
@@ -700,13 +704,33 @@
       down = null;
     };
     head.addEventListener('pointerdown', (e) => {
-      if (isDesktop() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      if (isDesktop() || e.pointerType !== 'mouse' || e.button !== 0) return; // палец обрабатывают touch-события ниже
       down = { y: e.clientY, id: e.pointerId, on: false };
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', finish);
       document.addEventListener('pointercancel', finish);
     });
     head.addEventListener('click', (e) => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+    // шапка, палец: touch-события работают одинаково в браузере и в WebView Telegram (там pointercancel приходит раньше времени)
+    let ht = null;
+    head.addEventListener('touchstart', (e) => {
+      ht = !isDesktop() && e.touches.length === 1 ? { y: e.touches[0].clientY, on: false } : null;
+    }, { passive: true });
+    head.addEventListener('touchmove', (e) => {
+      if (!ht) return;
+      const y = e.touches[0].clientY;
+      if (!ht.on) {
+        if (Math.abs(y - ht.y) < 6) return;
+        ht.on = true;
+        start(y);
+      }
+      if (e.cancelable) e.preventDefault();
+      move(y);
+    }, { passive: false });
+    const hend = () => { if (ht && ht.on) { end(); justDragged = true; setTimeout(() => { justDragged = false; }, 350); } ht = null; };
+    head.addEventListener('touchend', hend);
+    head.addEventListener('touchcancel', hend);
 
     // список: передача жеста панели, пока список прокручен до верха
     let lt = null;
@@ -751,7 +775,7 @@
     const det = $('#detail'), grip = $('#dGrip');
     let s = null;
     grip.addEventListener('pointerdown', (e) => {
-      if (isDesktop()) return;
+      if (isDesktop() || e.pointerType === 'touch') return;
       s = { y: e.clientY, id: e.pointerId, dy: 0, pts: [{ y: e.clientY, t: performance.now() }] };
       try { grip.setPointerCapture(e.pointerId); } catch { /* не критично */ }
       det.classList.add('dragging');
@@ -775,6 +799,36 @@
     };
     grip.addEventListener('pointerup', done);
     grip.addEventListener('pointercancel', done);
+
+    // палец: touch-события (в WebView Telegram надёжнее pointer-событий)
+    let tt = null;
+    grip.addEventListener('touchstart', (e) => {
+      if (isDesktop() || e.touches.length !== 1) return;
+      const y = e.touches[0].clientY;
+      tt = { y, dy: 0, pts: [{ y, t: performance.now() }] };
+      det.classList.add('dragging');
+    }, { passive: true });
+    grip.addEventListener('touchmove', (e) => {
+      if (!tt) return;
+      const y = e.touches[0].clientY;
+      if (e.cancelable) e.preventDefault();
+      tt.dy = Math.max(0, y - tt.y);
+      det.style.transform = `translateY(${tt.dy}px)`;
+      tt.pts.push({ y, t: performance.now() });
+      if (tt.pts.length > 4) tt.pts.shift();
+    }, { passive: false });
+    const tdone = () => {
+      if (!tt) return;
+      const a = tt.pts[0], b = tt.pts[tt.pts.length - 1];
+      const v = b.t > a.t ? (b.y - a.y) / (b.t - a.t) : 0;
+      const close = tt.dy > 90 || v > 0.5;
+      tt = null;
+      det.classList.remove('dragging');
+      det.style.transform = '';
+      if (close) closeDetail();
+    };
+    grip.addEventListener('touchend', tdone);
+    grip.addEventListener('touchcancel', tdone);
   })();
 
   // Высота верхней панели нужна боковой панели на десктопе и для режима full на телефоне.
@@ -923,6 +977,51 @@
     if (!e.target.isConnected) return;
     if (e.target.closest('#filterPanel, #menu, #filterBtn, #menuBtn')) return;
     closeDropdowns();
+  });
+  // Копирование и «Поделиться»: текст карточки (заголовок, описание, место, ссылка на источник)
+  function detailText() {
+    const ev = state.events.find((e) => e.id === state.selectedId);
+    if (!ev) return '';
+    const tx = texts(ev, state.showOriginal);
+    const place = ev.location_name || ev.district || '';
+    const url = safeUrl(ev.source_url);
+    return [tx.title, tx.desc, place ? `${t('location')}: ${place}` : '', ev.event_time ? fmtDT(ev.event_time) : '',
+      `${t('source')}: ${ev.publisher || ev.source}${url ? ' ' + url : ''}`].filter(Boolean).join('\n\n');
+  }
+  async function copyText(text) {
+    try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch { /* пробуем запасной способ */ }
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:0;top:0;opacity:0;font-size:16px';
+    document.body.append(ta);
+    ta.focus({ preventScroll: true }); ta.select(); ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+  let toastT = 0;
+  function toast(msg) {
+    let n = $('#toast');
+    if (!n) { n = el('div', { id: 'toast', class: 'toast', role: 'status' }); document.body.append(n); }
+    n.textContent = msg; n.classList.add('on');
+    clearTimeout(toastT); toastT = setTimeout(() => n.classList.remove('on'), 1800);
+  }
+  $('#dCopy').addEventListener('click', async () => {
+    const text = detailText();
+    if (!text) return;
+    const ok = await copyText(text);
+    TG.haptic('light');
+    toast(t(ok ? 'copied' : 'copyFail'));
+  });
+  $('#dShare').addEventListener('click', async () => {
+    const ev = state.events.find((e) => e.id === state.selectedId);
+    if (!ev) return;
+    const tx = texts(ev, state.showOriginal);
+    const url = safeUrl(ev.source_url) || location.href.split('#')[0];
+    if (TG.share && TG.share(url, tx.title)) return;
+    try { if (navigator.share) { await navigator.share({ title: tx.title, text: tx.title, url }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
+    toast(t((await copyText(detailText())) ? 'copied' : 'copyFail'));
   });
   $('#dShow').addEventListener('click', () => {
     if (!state.selectedId) return;
