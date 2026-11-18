@@ -484,6 +484,9 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   eq([d619.event_time, d619.is_verified, d619.publisher], [null, 1, 'WSW'], 'время происшествия неизвестно, источник официальный');
   r = await runSource(env, 'wsw');
   eq(r.changes, 0, 'повторный запуск ничего не меняет');
+  setRoutes([{ match: /rss\.xml/, reply: atomFeed }, { match: /presseinformationen/, reply: rssFeed }]);
+  const pr = await wsw.probe({ now: Date.now() });
+  ok(pr.accepted === 2 && pr.feeds.length === 2 && pr.feeds[0].items.some((i) => !i.accepted && i.reason), 'проба для админки: принятые и причины отказа');
   setRoutes([{ match: /wsw-online\.de\/suchergebnisse\/rss\.xml/, reply: 503 }, { match: /presseinformationen/, reply: rssFeed }]);
   r = await runSource(env, 'wsw');
   ok(r.ok, 'одна лента недоступна — вторая всё равно обработана');
@@ -491,6 +494,49 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   r = await runSource(env, 'wsw');
   ok(!r.ok, 'обе ленты недоступны — ошибка источника, записи не закрываются');
   eq((await rows(env, "SELECT id FROM events WHERE source = 'wsw'")).length, 2, 'при ошибке записи сохранены');
+}
+
+// ================= Погода (DWD через Bright Sky) =================
+console.log('\n[weather] /api/weather: измерения, прогноз, отказоустойчивость');
+{
+  const now = Date.now();
+  const hr = (k) => new Date(Math.floor(now / 3600e3) * 3600e3 + k * 3600e3).toISOString();
+  const cur = { weather: { timestamp: new Date(now - 20 * 60000).toISOString(), temperature: 7.34, icon: 'rain', wind_speed_10: 18.4, wind_gust_speed_10: 41, wind_direction_10: 250, relative_humidity: 93, precipitation_60: 1.2, pressure_msl: 1004.6, cloud_cover: 100 },
+    sources: [{ station_name: 'Wuppertal-Buchenhofen', distance: 4200 }] };
+  const fc = { weather: [-2, -1, 0, 1, 2, 3, 4, 5, 6, 7].map((k) => ({ timestamp: hr(k), temperature: 6 + k * 0.1, icon: k % 2 ? 'cloudy' : 'rain', precipitation: 0.3, precipitation_probability: 40 })) };
+  const env = newEnv();
+  const call = async (p = '/api/weather') => {
+    const res = await api.fetch(new Request('https://x.test' + p), env, { waitUntil: () => {} });
+    return { status: res.status, body: await res.json() };
+  };
+  setRoutes([{ match: /brightsky\.dev\/current_weather/, reply: cur }, { match: /brightsky\.dev\/weather/, reply: fc }]);
+  let r = await call();
+  eq(r.status, 200, '/api/weather: 200');
+  eq([r.body.from, r.body.current.temp, r.body.current.icon, r.body.current.wind_kmh, r.body.current.gust_kmh, r.body.current.humidity], ['observation', 7.3, 'rain', 18, 41, 93], 'текущие значения из измерений станции');
+  eq([r.body.station.name, r.body.station.distance_km], ['Wuppertal-Buchenhofen', 4], 'станция и расстояние');
+  ok(r.body.forecast.length === 6 && r.body.forecast.every((f) => Date.parse(f.t) >= now - 30 * 60000), 'прогноз: 6 ближайших часов, без прошедших');
+  ok(/DWD/.test(r.body.attribution), 'указан источник DWD');
+
+  // измерения устарели -> берём ближайший час прогноза и честно помечаем
+  const stale = { weather: { ...cur.weather, timestamp: new Date(now - 5 * 3600e3).toISOString() }, sources: cur.sources };
+  setRoutes([{ match: /brightsky\.dev\/current_weather/, reply: stale }, { match: /brightsky\.dev\/weather/, reply: fc }]);
+  r = await call('/api/weather?x=1');
+  eq(r.body.from, 'forecast', 'устаревшие измерения (5 ч) не показываем как текущие');
+
+  // мусорные значения отбрасываются
+  setRoutes([{ match: /brightsky\.dev\/current_weather/, reply: { weather: { timestamp: new Date(now - 60000).toISOString(), temperature: 999, icon: '<script>' } } }, { match: /brightsky\.dev\/weather/, reply: fc }]);
+  r = await call('/api/weather?x=2');
+  eq(r.body.from, 'forecast', 'температура вне допустимых пределов отбрасывается');
+
+  // текущая недоступна, прогноз есть
+  setRoutes([{ match: /brightsky\.dev\/current_weather/, reply: 503 }, { match: /brightsky\.dev\/weather/, reply: fc }]);
+  r = await call('/api/weather?x=3');
+  eq([r.status, r.body.from], [200, 'forecast'], 'нет измерений — показываем прогноз с пометкой');
+
+  // всё недоступно
+  setRoutes([{ match: /brightsky\.dev/, reply: 503 }]);
+  r = await call('/api/weather?x=4');
+  eq(r.status, 502, 'источник недоступен: 502, а не выдуманные данные');
 }
 
 // ================= разбор реальных релизов Presseportal =================
