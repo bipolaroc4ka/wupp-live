@@ -104,7 +104,11 @@ export function toItem(story, nowMs) {
   if (end && end.getTime() + DAY < nowMs) return { reason: 'срок действия уже истёк' };
   const anchor = Math.max(story.published, start ? start.getTime() : 0);
   const expiresMs = end ? end.getTime() + DAY : anchor + TTL_DAYS * DAY;
-  if (expiresMs <= nowMs) return { reason: 'старше TTL' };
+  if (expiresMs <= nowMs) {
+    // подробность для пробы в админке: что именно распознано
+    const f = (d) => (d ? d.toISOString().slice(0, 10) : 'нет');
+    return { reason: `срок истёк (начало: ${f(start)}, конец: ${f(end)}; без даты конца запись хранится ${TTL_DAYS} дн.)` };
+  }
 
   const street = extractStreet(all);
   const district = extractDistrict(all);
