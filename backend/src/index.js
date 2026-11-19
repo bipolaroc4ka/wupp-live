@@ -1,4 +1,4 @@
-// Wuppertal Live — HTTP API (публичное + админское) и обработчик cron.
+// Wuppertal Live — HTTP AP (публичное + админское) и обработчик cron.
 
 import { CATEGORIES, STATUSES } from './config.js';
 import { SOURCES, runScheduled, runSource, ensureSources } from './cron.js';
