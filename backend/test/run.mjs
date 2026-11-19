@@ -460,6 +460,23 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   ].join('')}</feed>`;
   const rssFeed = `<?xml version="1.0"?><rss version="2.0"><channel><item><title>Schwebebahn: Störung am Wochenende</title><link>https://www.wsw-online.de/ueber-uns/presse/news/artikel/detail/stoerung/</link><guid>wsw-stoerung-1</guid><pubDate>${new Date(now - 3600e3).toUTCString()}</pubDate><description>&lt;p&gt;Wegen einer Störung fährt die Schwebebahn zwischen Oberbarmen und Werther Brücke nicht. Es gilt Schienenersatzverkehr.&lt;/p&gt;</description></item></channel></rss>`;
 
+  {
+    const cases = [
+      ['Wasserrohrbruch in der Friedrichstraße', 'Wegen eines Rohrbruchs ist die Wasserversorgung im Bereich Friedrichstraße unterbrochen.', 'infra_water'],
+      ['Stromausfall in Vohwinkel', 'Ein Kabelschaden führte zu einem Stromausfall in Teilen von Vohwinkel.', 'infra_power'],
+      ['Gasaustritt an der Hofaue', 'Nach einem Gasaustritt ist die Hofaue gesperrt.', 'infra_damage'],
+      ['Leitungsarbeiten: Vollsperrung der Friedrichstraße', 'Wegen Leitungsarbeiten wird die Friedrichstraße zwischen Hofaue und Neumarkt vollgesperrt.', 'road_closure'],
+      ['Parkplatzsperrung Carnaper Platz', 'Aufgrund des Weihnachtscircus bleibt der Carnaper Platz gesperrt.', null],
+      ['Nächtliche Wartungsarbeiten am Entlastungssammler Wupper', 'Die Arbeiten im Kanal finden nachts statt.', null],
+      ['Planbar ins neue Jahr: Strom Garant', 'Der Strom Garant läuft bis Ende 2027.', null]
+    ];
+    const wswm = await import('../src/sources/wsw.js');
+    for (const [ti, de, want] of cases) eq(wswm.classifyAny(ti, de).category || null, want, `WSW классификация: ${ti}`);
+    const inc = wswm.toItem({ id: 'u1', title: 'Wasserrohrbruch in der Friedrichstraße', url: 'https://www.wsw-online.de/a/', published: now - 3600e3, description: 'Wegen eines Rohrbruchs ist die Wasserversorgung im Bereich Friedrichstraße unterbrochen.' }, now);
+    ok(inc.item && Date.parse(inc.item.expires_at) - (now - 3600e3) === 3 * 86400e3, 'авария на сети без срока хранится 3 дня');
+    eq(wswm.durationDays('Die Arbeiten werden voraussichtlich drei Wochen dauern.'), 21, 'срок: «drei Wochen dauern»');
+    eq(wswm.durationDays('wird die Buslinie 619 für etwa drei Monate umgeleitet'), 90, 'срок: «für etwa drei Monate»');
+  }
   eq(wsw.parseFeed(atomFeed).length, 5, 'Atom: записи разобраны (ссылка из href)');
   eq(wsw.parseFeed(rssFeed).length, 1, 'RSS: запись разобрана');
   ok(!/<p>/.test(wsw.parseFeed(rssFeed)[0].description), 'HTML из описания убран');
