@@ -156,6 +156,8 @@ export function toItem(story, nowMs) {
   const street = extractStreet(all);
   const district = extractDistrict(all);
   const scheduled = !!start && start.getTime() > nowMs;
+  // известный срок ещё идёт (изменение действует сейчас) — тоже «ACTIVE», иначе запись выпадала бы из окна API через сутки
+  const inEffect = !scheduled && !!end && end.getTime() + DAY > nowMs;
 
   const item = {
     source_event_id: story.id,
@@ -177,8 +179,8 @@ export function toItem(story, nowMs) {
     valid_until_precision: end ? 'day' : null,
     published_at: ISO(story.published),
     expires_at: ISO(expiresMs),
-    status: scheduled ? 'ACTIVE' : 'RECENT',
-    status_reason: scheduled ? 'official_wsw_scheduled_change' : 'official_wsw_notice',
+    status: scheduled || inEffect ? 'ACTIVE' : 'RECENT',
+    status_reason: scheduled ? 'official_wsw_scheduled_change' : inEffect ? 'official_wsw_change_in_effect' : 'official_wsw_notice',
     confidence: street ? 0.8 : 0.7,
     is_verified: 1
   };
