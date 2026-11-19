@@ -1,4 +1,5 @@
-// WSW (Wuppertaler Stadtwerke): сообщения об изменениях в движении автобусов и Schwebebahn.
+// WSW (Wuppertaler Stadtwerke): сообщения об изменениях в движении автобусов и Schwebebahn,
+// а также аварии на сетях (Rohrbruch, Stromausfall, Gasaustritt, Fernwärme) и перекрытия улиц из-за работ на сетях.
 // Источник — две официальные ленты сайта WSW (News и Presseinformationen). В них много рекламы (тарифы, акции, мероприятия),
 // поэтому берём только записи, где есть и транспортный предмет (линия, Schwebebahn, остановка), и признак изменения движения
 // (объезд, отмена, перенос остановки, замещающий транспорт, сбой). Остальное отбрасывается.
@@ -23,6 +24,7 @@ export const FEEDS = [
 const SCOPE = 'wsw/notices';
 const MAX_AGE_DAYS = 45;
 const TTL_DAYS = 14; // без даты окончания в тексте: от даты публикации (или от начала)
+const INCIDENT_TTL_DAYS = 3; // авария на сети без указанного срока быстро теряет актуальность
 const DAY = 86400000;
 const MAX_ITEMS_PER_FEED = 40;
 const MAX_XML_CHARS = 2_000_000;
@@ -39,6 +41,17 @@ const CATEGORIES = [
   ['transit_cancel', /ausfall|fällt\s+aus|fallen\s+aus|eingestellt|ersatzverkehr|schienenersatz|betriebseinstellung|kein\s+betrieb|entfäll/i],
   ['transit_delay', /störung|einschränkung|verspätung|fahrplanänderung|sperr|baumaßnahme|bauarbeiten|taxibus/i]
 ];
+
+// Аварии на сетях, затрагивающие жителей (только явные признаки сбоя; плановые работы и новости компании сюда не попадают)
+const UTILITY = [
+  ['infra_power', /stromausfall|stromstörung|stromversorgung[^.\n]{0,40}(?:unterbrochen|gestört|ausgefallen|eingeschränkt)/i],
+  ['infra_water', /wasserrohrbruch|rohrbruch|wasserleitungsbruch|wasserversorgung[^.\n]{0,40}(?:unterbrochen|gestört|eingeschränkt|ausgefallen)|kein(?:e)?\s+wasser|abkochgebot|trinkwasser[^.\n]{0,40}(?:abkochen|verunreinigt)/i],
+  ['infra_damage', /gasaustritt|gasleck|gasgeruch|leitungsschaden|(?:gas|fernwärme)versorgung[^.\n]{0,40}(?:unterbrochen|gestört|ausgefallen)|fernwärme[^.\n]{0,40}(?:ausfall|störung|unterbrochen)/i]
+];
+// Работы на сетях считаются событием только если из-за них перекрыта или ограничена улица (и улица названа)
+const WORKS = /(?:leitungs|kanal|bau|tiefbau)?arbeiten|baumaßnahme|baustelle/i;
+const CLOSURE = /vollsperrung|halbseitig|gesperrt|sperrung|verkehrseinschränkung|verkehrsbehinderung|einbahnstraße|ampelregelung/i;
+const NOT_ROAD = /parkplatz|parkbetrieb|parkhaus|stellplatz/i;
 
 const decode = (v) => String(v || '')
   .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -93,21 +106,51 @@ export function classify(title, description) {
   return { reason: 'не удалось определить тип' };
 }
 
+// Транспорт (classify) -> авария на сетях -> перекрытие улицы из-за работ -> иначе отказ с причиной
+export function classifyAny(title, description) {
+  const all = `${title}. ${description}`;
+  const tr = classify(title, description);
+  if (tr.category) return tr;
+  for (const [cat, re] of UTILITY) if (re.test(all)) return { category: cat, incident: true };
+  if (WORKS.test(all) && CLOSURE.test(all) && !NOT_ROAD.test(title) && extractStreet(all)) {
+    return { category: /vollsperrung|gesperrt|sperrung/i.test(all) ? 'road_closure' : 'roadworks' };
+  }
+  return tr;
+}
+
+// «für etwa drei Monate», «werden drei Wochen dauern», «Dauer: 2 Tage» -> число дней (или null)
+const NW = { ein: 1, eine: 1, einen: 1, einem: 1, zwei: 2, drei: 3, vier: 4, fünf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10 };
+const DN = '(\\d{1,2}|ein|eine|einen|einem|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)';
+const DU = '(tag|tage|tagen|woche|wochen|monat|monate|monaten)';
+export function durationDays(text) {
+  const m = text.match(new RegExp(`\\bfür\\s+(?:etwa|rund|ca\\.?|circa|voraussichtlich|mindestens|insgesamt)\\s+${DN}\\s+${DU}\\b`, 'i'))
+    || text.match(new RegExp(`\\b${DN}\\s+${DU}\\b[^.\\n]{0,40}?\\b(?:dauer\\w*|lang)\\b`, 'i'))
+    || text.match(new RegExp(`\\b(?:dauer\\w*|bauzeit)\\b[^.\\n]{0,30}?\\b${DN}\\s+${DU}\\b`, 'i'));
+  if (!m) return null;
+  const n = /^\d/.test(m[1]) ? parseInt(m[1], 10) : NW[m[1].toLowerCase()];
+  const u = m[2].toLowerCase();
+  const days = u.startsWith('tag') ? n : u.startsWith('woch') ? n * 7 : n * 30;
+  return days >= 1 && days <= 366 ? days : null;
+}
+
 export function toItem(story, nowMs) {
   if (nowMs - story.published > MAX_AGE_DAYS * DAY) return { reason: 'старше 45 дней' };
   if (story.published > nowMs + 10 * 60000) return { reason: 'дата из будущего' };
-  const cls = classify(story.title, story.description);
+  const cls = classifyAny(story.title, story.description);
   if (!cls.category) return { reason: cls.reason };
 
   const all = `${story.title}. ${story.description}`;
-  const { start, end } = parseGermanDates(all, nowMs);
+  const parsed = parseGermanDates(all, nowMs);
+  const start = parsed.start;
+  let end = parsed.end;
+  if (start && !end) { const days = durationDays(all); if (days) end = new Date(start.getTime() + (days - 1) * DAY); }
   if (end && end.getTime() + DAY < nowMs) return { reason: 'срок действия уже истёк' };
   const anchor = Math.max(story.published, start ? start.getTime() : 0);
-  const expiresMs = end ? end.getTime() + DAY : anchor + TTL_DAYS * DAY;
+  const expiresMs = end ? end.getTime() + DAY : anchor + (cls.incident ? INCIDENT_TTL_DAYS : TTL_DAYS) * DAY;
   if (expiresMs <= nowMs) {
     // подробность для пробы в админке: что именно распознано
     const f = (d) => (d ? d.toISOString().slice(0, 10) : 'нет');
-    return { reason: `срок истёк (начало: ${f(start)}, конец: ${f(end)}; без даты конца запись хранится ${TTL_DAYS} дн.)` };
+    return { reason: `срок истёк (начало: ${f(start)}, конец: ${f(end)}; без даты конца запись хранится ${cls.incident ? INCIDENT_TTL_DAYS : TTL_DAYS} дн.)` };
   }
 
   const street = extractStreet(all);
