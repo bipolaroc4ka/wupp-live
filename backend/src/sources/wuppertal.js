@@ -931,6 +931,8 @@ async function toEvent(ctx, item, analysis) {
 
   const isScheduled =
     start && start.getTime() > ctx.now;
+  // период действия с известным концом ещё идёт: запись «действует» (ACTIVE), иначе она выпадала бы из окна API через сутки
+  const inEffect = !isScheduled && !!end && end.getTime() + DAY > ctx.now;
 
   const id = item.guid || item.url;
 
@@ -966,11 +968,13 @@ async function toEvent(ctx, item, analysis) {
     published_at: publishedAt,
     expires_at: ISO(expiresAt),
 
-    status: isScheduled ? 'ACTIVE' : 'RECENT',
+    status: isScheduled || inEffect ? 'ACTIVE' : 'RECENT',
 
     status_reason: isScheduled
       ? 'official_city_scheduled_roadwork'
-      : 'official_city_traffic_press_release',
+      : inEffect
+        ? 'official_city_roadwork_in_effect'
+        : 'official_city_traffic_press_release',
 
     confidence: hasGeo
       ? (geo.approximate ? 0.78 : 0.9)
