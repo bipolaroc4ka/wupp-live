@@ -6,8 +6,8 @@
 import { ISO, truncate } from './util.js';
 import { translateStructured } from './structured.js';
 
-const M2M_MODEL = '@cf/meta/m2m100-1.2b'; // запасной движок: маленькая модель-переводчик
-const DEFAULT_LLM = '@cf/google/gemma-4-26b-a4b-it'; // основная языковая модель Workers AI
+const MODEL = '@cf/meta/m2m100-1.2b';           // запасной движок: маленькая модель-переводчик
+const DEFAULT_LLM = '@cf/google/gemma-3-12b-it'; // языковая модель Workers AI (можно заменить переменной TRANSLATE_MODEL)
 const CHUNK = 400;
 const MAX_DESC = 3600;
 const PER_RUN = 6;
@@ -235,7 +235,7 @@ class BudgetExceeded extends Error {}
 async function callAI(env, text) {
   if (aiBudget.left <= 0) throw new BudgetExceeded('исчерпан лимит обращений к модели за запуск');
   aiBudget.left--;
-  const result = await env.AI.run(M2M_MODEL, { text, source_lang: 'de', target_lang: 'ru' });
+  const result = await env.AI.run(MODEL, { text, source_lang: 'de', target_lang: 'ru' });
 
   const translated = result?.translated_text ?? result?.result?.translated_text;
   if (typeof translated !== 'string' || !translated.trim()) {
@@ -471,15 +471,24 @@ async function saveTranslation(env, event, hash, title, description, modelName =
 
 // ---------- движки перевода ----------
 // 1) DeepL (если задан секрет DEEPL_API_KEY): лучшее качество, названия защищены тегами <x>.
-// 2) Языковая модель Workers AI (по умолчанию Gemma 4 26B A4B): понимает контекст и инструкции «не переводить названия»,
+// 2) Языковая модель Workers AI (по умолчанию Gemma 3 12B): понимает контекст и инструкции «не переводить названия»,
 //    результат проверяется: все найденные названия должны остаться дословно.
 // 3) m2m100 (запасной): названия вырезаются из текста и вставляются обратно.
-// Выбор: переменная TRANSLATE_PROVIDER = deepl | llm | m2m, иначе автоматически по доступности.
+// 4) Внешняя модель по OpenAI-совместимому API (xAI Grok, OpenAI, OpenRouter и т. п.): TRANSLATE_PROVIDER=api,
+//    секрет TRANSLATE_API_KEY, переменные TRANSLATE_API_URL и TRANSLATE_API_MODEL. Те же инструкции и та же проверка названий.
+// Выбор: переменная TRANSLATE_PROVIDER = api | deepl | llm | m2m, иначе автоматически: api, DeepL, Workers AI.
+function apiConfigured(env) {
+  return !!(env.TRANSLATE_API_KEY && env.TRANSLATE_API_MODEL);
+}
+
 export function pickEngine(env) {
   const forced = String(env.TRANSLATE_PROVIDER || '').toLowerCase();
   const hasAI = !!(env.AI && typeof env.AI.run === 'function');
   if (forced === 'm2m') return hasAI ? 'm2m' : null;
   if (forced === 'llm') return hasAI ? 'llm' : null;
+  if (forced === 'api') return apiConfigured(env) ? 'api' : null;
+  if (forced === 'deepl') return env.DEEPL_API_KEY ? 'deepl' : null;
+  if (apiConfigured(env)) return 'api';   // внешняя модель по OpenAI-совместимому API (Grok, OpenAI, OpenRouter …)
   if (env.DEEPL_API_KEY) return 'deepl';
   return hasAI ? 'llm' : null;
 }
@@ -577,25 +586,58 @@ function parseLlmAnswer(raw, wantText) {
   return { title, text };
 }
 
-async function translateLlm(env, event) {
-  const model = env.TRANSLATE_MODEL || DEFAULT_LLM;
-  const title = truncate(event.title || '', 300);
+// Внешняя модель: POST {TRANSLATE_API_URL} в формате chat/completions. Ключ в сообщения об ошибках не попадает.
+async function callExternalApi(env, user) {
+  const url = env.TRANSLATE_API_URL || 'https://api.x.ai/v1/chat/completions';
+  if (!/^https:\/\//i.test(url)) throw new Error('TRANSLATE_API_URL должен начинаться с https://');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.TRANSLATE_API_KEY}` },
+      body: JSON.stringify({
+        model: env.TRANSLATE_API_MODEL,
+        messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
+        temperature: 0,
+        max_tokens: 3000
+      }),
+      signal: ctrl.signal
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 200).replace(/Bearer\s+\S+/gi, 'Bearer ***');
+      throw new Error(`API перевода: HTTP ${res.status} ${detail}`.trim());
+    }
+    const json = await res.json();
+    const raw = json?.choices?.[0]?.message?.content;
+    if (typeof raw !== 'string') throw new Error('API перевода: нет текста в ответе');
+    return raw;
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('API перевода: таймаут');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+
+async function translateLlm(env, event, viaApi = false) {
+  const model = viaApi ? env.TRANSLATE_API_MODEL : (env.TRANSLATE_MODEL || DEFAULT_LLM);
+  const title = truncate(event.title || '', viaApi && event.titleLimit ? event.titleLimit : 300);
   const desc = event.description ? truncate(event.description, MAX_DESC) : '';
   const user = `TITLE:\n${title}` + (desc ? `\n\nTEXT:\n${desc}` : '');
-  if (aiBudget.left <= 0) throw new BudgetExceeded('исчерпан лимит обращений к модели за запуск');
-  aiBudget.left--;
-  const r = await env.AI.run(model, {
-    messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
-    temperature: 0, max_tokens: 1500,
-    chat_template_kwargs: { enable_thinking: false }
-  });
-  // у разных моделей Workers AI ответ лежит в response или в choices[0].message.content
-  const raw = r?.response ?? r?.choices?.[0]?.message?.content ?? r?.result?.response;
+  let raw;
+  if (viaApi) raw = await callExternalApi(env, user);
+  else {
+    const r = await env.AI.run(model, {
+      messages: [{ role: 'system', content: LLM_SYSTEM }, { role: 'user', content: user }],
+      temperature: 0, max_tokens: 1500
+    });
+    // у разных моделей Workers AI ответ лежит в response или в choices[0].message.content
+    raw = r?.response ?? r?.choices?.[0]?.message?.content ?? r?.result?.response;
+  }
   const parsed = parseLlmAnswer(raw, !!desc);
   return {
     title: validateTranslation(title, parsed.title, event.location_name),
     description: desc ? validateTranslation(desc, parsed.text, event.location_name) : null,
-    model
+    model: viaApi ? `api:${model}` : model
   };
 }
 
@@ -603,7 +645,7 @@ async function translateLlm(env, event) {
 async function translateM2m(env, event, keepTitle = false) {
   const title = keepTitle ? String(event.title || '').trim() : await translateText(env, truncate(event.title || '', 300), event.location_name);
   const description = event.description ? await translateText(env, truncate(event.description, MAX_DESC), event.location_name) : null;
-  return { title, description, model: M2M_MODEL };
+  return { title, description, model: MODEL };
 }
 
 // Заголовок Autobahn («A46 | Wuppertal-Barmen - Holtkamp») состоит из номера трассы и названий мест: не переводим.
@@ -613,20 +655,44 @@ async function translateValue(env, engine, event, text) {
     const r = await translateDeepL(env, { ...event, title: '', description: text }, true);
     return r.description || text;
   }
-  if (engine === 'llm') {
-    try {
-      const r = await translateLlm(env, {
-        title: truncate(text, MAX_DESC),
-        description: '',
-        location_name: event.location_name
-      });
-      return r.title || text;
-    } catch (error) {
-      if (error instanceof BudgetExceeded) throw error;
-      console.warn(`[translate] ${event.id}: LLM-фрагмент не переведён (${error?.message || error}), используем m2m100`);
-    }
+  if (engine === 'api') {
+    // фрагмент идёт как «заголовок» без лимита 300 символов
+    const r = await translateLlm(env, { title: text, description: null, location_name: event.location_name, titleLimit: MAX_DESC }, true);
+    return r.title || text;
   }
   return translateText(env, truncate(text, MAX_DESC), event.location_name);
+}
+
+
+// Стандартные заголовки официальных предупреждений («Amtliche WARNUNG vor MARKANTER GLÄTTE»): модели переводят их неверно
+// («от маркировки»). Известные явления переводятся по таблице, неизвестное уходит обычному движку.
+const WARN_NOUN = {
+  glätte: ['гололедица', 'f'], glatteis: ['гололёд', 'm'], frost: ['мороз', 'm'], schneefall: ['снегопад', 'm'], schneeverwehungen: ['снежные заносы', 'p'],
+  dauerregen: ['затяжной дождь', 'm'], starkregen: ['ливень', 'm'], regen: ['дождь', 'm'], gewitter: ['гроза', 'f'], hitze: ['жара', 'f'], nebel: ['туман', 'm'],
+  wind: ['ветер', 'm'], windböen: ['порывы ветра', 'p'], sturmböen: ['штормовые порывы ветра', 'p'], orkanböen: ['ураганные порывы ветра', 'p'],
+  sturm: ['шторм', 'm'], tauwetter: ['оттепель', 'f'], hochwasser: ['паводок', 'm'], waldbrand: ['лесной пожар', 'm'], waldbrandgefahr: ['опасность лесных пожаров', 'f']
+};
+const WARN_ADJ = {
+  markant: { f: 'значительная', m: 'значительный', p: 'значительные' }, stark: { f: 'сильная', m: 'сильный', p: 'сильные' },
+  extrem: { f: 'экстремальная', m: 'экстремальный', p: 'экстремальные' }, schwer: { f: 'сильная', m: 'сильный', p: 'сильные' },
+  leicht: { f: 'слабая', m: 'слабый', p: 'слабые' }, dauerhaft: { f: 'продолжительная', m: 'продолжительный', p: 'продолжительные' }
+};
+export function officialWarningTitle(title) {
+  const t = String(title || '').trim().replace(/\s+/g, ' ');
+  const m = t.match(/^(Amtliche\s+)?(UNWETTER)?(WARNUNG|VORABINFORMATION)(?:\s+UNWETTER)?\s+vor\s+(.+)$/i);
+  if (!m) return null;
+  const words = m[4].toLowerCase().split(' ');
+  let noun = WARN_NOUN[words[words.length - 1]];
+  if (!noun) return null;
+  let phrase = noun[0];
+  if (words.length > 1) {
+    const stem = words[0].replace(/(?:e|er|es|en|em)$/, '');
+    const adj = WARN_ADJ[stem];
+    if (!adj || words.length > 2) return null;
+    phrase = `${adj[noun[1]] || adj.m} ${noun[0]}`;
+  }
+  const kind = /^vorabinformation/i.test(m[3]) ? 'Предварительная информация' : /unwetter/i.test(t.split(/\s+vor\s+/i)[0]) ? 'Предупреждение о непогоде' : 'Официальное предупреждение';
+  return `${kind}: ${phrase}`;
 }
 
 async function translateEvent(env, event, engine) {
@@ -643,19 +709,22 @@ async function translateEvent(env, event, engine) {
   const run = async (kind) => {
     if (kind === 'deepl') return translateDeepL(env, event, keepTitle);
     if (kind === 'llm') return translateLlm(env, event);
+    if (kind === 'api') return translateLlm(env, event, true);
     return translateM2m(env, event, keepTitle);
   };
   let out;
   try {
     out = await run(engine);
   } catch (e) {
-    // При любой ошибке LLM используем m2m100. Если исчерпан общий лимит вызовов,
-    // не запускаем запасной движок: он использует ту же квоту Workers AI.
-    if (engine !== 'llm' || e instanceof BudgetExceeded || !(env.AI && env.AI.run)) throw e;
-    console.warn(`[translate] ${event.id}: ошибка LLM (${e?.message || e}), запасной перевод m2m100`);
+    // Языковая модель исказила название или ответила не по формату: берём запасной движок, если он доступен.
+    const recoverable = (engine === 'llm' || engine === 'api') && /название|формат|пуст|русск|длинн/.test(e.message || '');
+    if (!recoverable || !(env.AI && env.AI.run)) throw e;
+    console.warn(`[translate] ${event.id}: ${e.message}, запасной перевод`);
     out = await translateM2m(env, event, keepTitle);
   }
   if (keepTitle) out.title = String(event.title || '').trim();
+  const fixed = officialWarningTitle(event.title);
+  if (fixed) out.title = fixed;
   return out;
 }
 
