@@ -514,41 +514,6 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   eq((await rows(env, "SELECT id FROM events WHERE source = 'wsw'")).length, 2, 'при ошибке записи сохранены');
 }
 
-// ================= Wuppertaler Rundschau (неофициально, заголовок + ссылка) =================
-console.log('\n[rundschau] только происшествия в Вупперталь, без текста статьи');
-{
-  const rs = await import('../src/sources/rundschau.js');
-  const now = Date.now();
-  const it = (title, link, desc, ageH = 2) => `<item><title>${title}</title><link>${link}</link><pubDate>${new Date(now - ageH * 3600e3).toUTCString()}</pubDate><description>${desc}</description></item>`;
-  const feed = `<?xml version="1.0"?><rss version="2.0"><channel>${[
-    it('Wichlinghausen: Ermittlungen nach Wurf von Molotowcocktail auf Haus', 'http://www.wuppertaler-rundschau.de/stadtteile/wichlinghausen/molotow_aid-1', 'Nach dem Wurf eines Molotowcocktails am Donnerstag gegen 13 Uhr in der Normannenstraßein Wuppertal-Wichlinghausen haben'),
-    it('Oberbarmen: Kriminelle stehlen iPhone an Wohnungstür', 'http://www.wuppertaler-rundschau.de/stadtteile/heckinghausen-oberbarmen/iphone_aid-2', 'In der Hügelstraße in Oberbarmen ist eine 14-Jährige überfallen worden.'),
-    it('Handball-BL: BHC im Kampf um Klassenerhalt', 'http://www.wuppertaler-rundschau.de/sport/sporttexte/bhc_aid-3', 'Der Bergische HC spielt in Bietigheim.'),
-    it('Vorwerk gibt eine halbe Million für RTL-Spendenmarathon', 'http://www.wuppertaler-rundschau.de/lokales/vorwerk_aid-4', 'Das Unternehmen hat gespendet.'),
-    it('Unfall auf der A46', 'https://evil.example/x', 'Unfall in Wuppertal-Barmen'),
-    it('Brand in Elberfeld', 'http://www.wuppertaler-rundschau.de/lokales/brand_aid-5', 'Feuer in Elberfeld.', 50)
-  ].join('')}</channel></rss>`;
-  eq(rs.parseFeed(feed).length, 5, 'чужой домен отброшен при разборе, http→https');
-  const a = rs.toItem(rs.parseFeed(feed)[0], now).item;
-  eq([a.category, a.location_name, a.is_verified, a.description, a.source_url.startsWith('https://')], ['hazard', 'Normannenstraße', 0, null, true], 'Molotow: улица из склеенного тизера, неофициально, без текста');
-  const b = rs.toItem(rs.parseFeed(feed)[1], now).item;
-  eq([b.category, b.location_name], ['police', 'Hügelstraße'], 'iPhone/überfall: police + улица');
-  ok(!rs.toItem(rs.parseFeed(feed)[2], now).item, 'спорт отброшен');
-  ok(!rs.toItem(rs.parseFeed(feed)[3], now).item, 'бизнес без признаков происшествия отброшен');
-  ok(!rs.toItem(rs.parseFeed(feed)[4], now).item, 'старше 30 ч отброшено');
-  const env = newEnv();
-  setRoutes([{ match: /wuppertaler-rundschau\.de\/feed\.rss/, reply: feed }, { match: /nominatim/, reply: [] }]);
-  const r = await runSource(env, 'rundschau');
-  ok(r.ok, 'rundschau: запуск');
-  const ev = await rows(env, "SELECT * FROM events WHERE source = 'rundschau'");
-  eq(ev.length, 2, 'сохранены 2 происшествия');
-  ok(ev.every((e) => e.is_verified === 0 && !e.description && e.publisher === 'Wuppertaler Rundschau'), 'все с пометкой неофициально и без текста');
-  const pr = await rs.probe({ now });
-  ok(pr.accepted === 2 && pr.items.some((i) => !i.accepted && i.reason), 'проба: принятые и причины');
-  setRoutes([{ match: /wuppertaler-rundschau/, reply: 503 }]);
-  ok(!(await runSource(env, 'rundschau')).ok, 'лента недоступна — ошибка, записи сохранены');
-}
-
 // ================= WSW Netz (карта störungen) =================
 console.log('\n[wswnetz] карта: тихий режим, отключение, смена формата');
 {
@@ -889,7 +854,7 @@ console.log('\n[api] публичный и админский API');
 
   res = await get('/api/status');
   body = await res.json();
-  ok(Array.isArray(body.sources) && body.sources.length === 8, '/api/status: восемь источников (с WSW, Rundschau, WSW Netz)');
+  ok(Array.isArray(body.sources) && body.sources.length === 7, '/api/status: семь источников (с WSW и WSW Netz)');
   ok(body.sources.every((s) => s.stale), 'источники без успешных запусков помечены stale');
   ok(!JSON.stringify(body).includes('last_error"'), 'публично нет текста ошибок');
 }
