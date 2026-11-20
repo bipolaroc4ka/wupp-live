@@ -508,11 +508,11 @@
     setKids($('#dBadges'),
       el('span', { class: 'badge', style: `color:${GROUP_COLOR[g]}` }, ICON.forCategory(ev.category, 15), t('c_' + ev.category)),
       el('span', { class: 'badge ' + ev.status, text: t('st_' + ev.status) }),
-      ev.is_verified ? el('span', { class: 'badge official', text: t('official') }) : null,
+      ev.is_verified ? el('span', { class: 'badge official', text: t('official') }) : (ev.source === 'rundschau' ? el('span', { class: 'badge', text: t('unofficial') }) : null),
       ev.source === 'nina' && SEVERITIES.has(ev.severity) ? el('span', { class: 'badge', text: t('sev_' + ev.severity) }) : null);
     const tx = texts(ev, state.showOriginal);
     $('#dTitle').textContent = tx.title;
-    $('#dDesc').textContent = tx.desc;
+    $('#dDesc').textContent = tx.desc || (ev.source === 'rundschau' ? t('unofficialHint') : '');
     $('#dDesc').hidden = !tx.desc;
     const tbox = $('#dTrans');
     if (hasTranslation(ev)) {
