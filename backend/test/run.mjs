@@ -496,6 +496,7 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   const d619 = ev[0], sb = ev[1];
   eq([d619.category, sb.category], ['transit_detour', 'transit_delay'], 'категории: объезд и сбой');
   eq(d619.location_name, 'Nützenberger Straße', 'улица найдена в тексте');
+  eq(d619.status, 'ACTIVE', 'действующий объезд со сроком — ACTIVE (не выпадает из окна API)');
   ok(d619.valid_from && d619.valid_until && Date.parse(d619.valid_until) - Date.parse(d619.valid_from) > 80 * 86400e3, '«für etwa drei Monate» → срок ≈ 3 месяца');
   eq(Date.parse(d619.expires_at), Date.parse(d619.valid_until) + 86400e3, 'срок хранения = конец действия');
   eq([d619.event_time, d619.is_verified, d619.publisher], [null, 1, 'WSW'], 'время происшествия неизвестно, источник официальный');
@@ -511,6 +512,68 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   r = await runSource(env, 'wsw');
   ok(!r.ok, 'обе ленты недоступны — ошибка источника, записи не закрываются');
   eq((await rows(env, "SELECT id FROM events WHERE source = 'wsw'")).length, 2, 'при ошибке записи сохранены');
+}
+
+// ================= Wuppertaler Rundschau (неофициально, заголовок + ссылка) =================
+console.log('\n[rundschau] только происшествия в Вупперталь, без текста статьи');
+{
+  const rs = await import('../src/sources/rundschau.js');
+  const now = Date.now();
+  const it = (title, link, desc, ageH = 2) => `<item><title>${title}</title><link>${link}</link><pubDate>${new Date(now - ageH * 3600e3).toUTCString()}</pubDate><description>${desc}</description></item>`;
+  const feed = `<?xml version="1.0"?><rss version="2.0"><channel>${[
+    it('Wichlinghausen: Ermittlungen nach Wurf von Molotowcocktail auf Haus', 'http://www.wuppertaler-rundschau.de/stadtteile/wichlinghausen/molotow_aid-1', 'Nach dem Wurf eines Molotowcocktails am Donnerstag gegen 13 Uhr in der Normannenstraßein Wuppertal-Wichlinghausen haben'),
+    it('Oberbarmen: Kriminelle stehlen iPhone an Wohnungstür', 'http://www.wuppertaler-rundschau.de/stadtteile/heckinghausen-oberbarmen/iphone_aid-2', 'In der Hügelstraße in Oberbarmen ist eine 14-Jährige überfallen worden.'),
+    it('Handball-BL: BHC im Kampf um Klassenerhalt', 'http://www.wuppertaler-rundschau.de/sport/sporttexte/bhc_aid-3', 'Der Bergische HC spielt in Bietigheim.'),
+    it('Vorwerk gibt eine halbe Million für RTL-Spendenmarathon', 'http://www.wuppertaler-rundschau.de/lokales/vorwerk_aid-4', 'Das Unternehmen hat gespendet.'),
+    it('Unfall auf der A46', 'https://evil.example/x', 'Unfall in Wuppertal-Barmen'),
+    it('Brand in Elberfeld', 'http://www.wuppertaler-rundschau.de/lokales/brand_aid-5', 'Feuer in Elberfeld.', 50)
+  ].join('')}</channel></rss>`;
+  eq(rs.parseFeed(feed).length, 5, 'чужой домен отброшен при разборе, http→https');
+  const a = rs.toItem(rs.parseFeed(feed)[0], now).item;
+  eq([a.category, a.location_name, a.is_verified, a.description, a.source_url.startsWith('https://')], ['hazard', 'Normannenstraße', 0, null, true], 'Molotow: улица из склеенного тизера, неофициально, без текста');
+  const b = rs.toItem(rs.parseFeed(feed)[1], now).item;
+  eq([b.category, b.location_name], ['police', 'Hügelstraße'], 'iPhone/überfall: police + улица');
+  ok(!rs.toItem(rs.parseFeed(feed)[2], now).item, 'спорт отброшен');
+  ok(!rs.toItem(rs.parseFeed(feed)[3], now).item, 'бизнес без признаков происшествия отброшен');
+  ok(!rs.toItem(rs.parseFeed(feed)[4], now).item, 'старше 30 ч отброшено');
+  const env = newEnv();
+  setRoutes([{ match: /wuppertaler-rundschau\.de\/feed\.rss/, reply: feed }, { match: /nominatim/, reply: [] }]);
+  const r = await runSource(env, 'rundschau');
+  ok(r.ok, 'rundschau: запуск');
+  const ev = await rows(env, "SELECT * FROM events WHERE source = 'rundschau'");
+  eq(ev.length, 2, 'сохранены 2 происшествия');
+  ok(ev.every((e) => e.is_verified === 0 && !e.description && e.publisher === 'Wuppertaler Rundschau'), 'все с пометкой неофициально и без текста');
+  const pr = await rs.probe({ now });
+  ok(pr.accepted === 2 && pr.items.some((i) => !i.accepted && i.reason), 'проба: принятые и причины');
+  setRoutes([{ match: /wuppertaler-rundschau/, reply: 503 }]);
+  ok(!(await runSource(env, 'rundschau')).ok, 'лента недоступна — ошибка, записи сохранены');
+}
+
+// ================= WSW Netz (карта störungen) =================
+console.log('\n[wswnetz] карта: тихий режим, отключение, смена формата');
+{
+  const wn = await import('../src/sources/wswnetz.js');
+  const pre = "var mymap = L.map('mapid').setView([51.235, 7.17], 11);\nvar latlngsWtal = [[51.21,7.05],[51.2,7.04]];\nvar polygonWTal = L.polygon (latlngsWtal,{}).addTo(mymap);\n";
+  const quiet = pre + 'L.marker([51.25289257, 7.172574805]).addTo (mymap)\n\n.bindPopup("<p><h3> <b>WSW NETZ</b> </h3> Derzeit keine Stromst&oumlrungen im Hoch- und Mittelspannungsnetz der WSW Netz GmbH bekannt </p>").openPopup();\n';
+  const outage = quiet + 'L.marker([51.2701, 7.2002]).addTo (mymap)\n.bindPopup("<p><h3>Stromst&oumlrung</h3> Umspannwerk Kabelstra&szlig;e, Wiederversorgung bis 16 Uhr</p>");\nL.marker([48.1, 11.5]).addTo (mymap).bindPopup("<p>Au&szlig;erhalb</p>");\n';
+  const q = wn.analyze(quiet, Date.now());
+  eq([q.markers, q.quiet, q.items.length], [1, 1, 0], 'тихий режим: маркер «keine Störungen» — не событие');
+  const o = wn.analyze(outage, Date.now());
+  eq([o.markers, o.quiet, o.items.length, o.unparsed], [3, 1, 1, 1], 'отключение: 1 событие, чужие координаты в unparsed');
+  ok(/Kabelstraße/.test(o.items[0].description) && o.items[0].category === 'infra_power' && o.items[0].geo_precision === 'source', 'текст дословный, ß декодирован, точка с карты');
+  const env = newEnv();
+  setRoutes([{ match: /WSW_Netz_Marker\.js/, reply: outage }]);
+  let r = await runSource(env, 'wswnetz');
+  ok(r.ok, 'wswnetz: запуск');
+  eq((await rows(env, "SELECT id FROM events WHERE source = 'wswnetz' AND status = 'ACTIVE'")).length, 1, 'событие создано');
+  setRoutes([{ match: /WSW_Netz_Marker\.js/, reply: quiet }]);
+  await runSource(env, 'wswnetz');
+  await runSource(env, 'wswnetz');
+  eq((await rows(env, "SELECT id FROM events WHERE source = 'wswnetz' AND status = 'ACTIVE'")).length, 0, 'маркер исчез на двух запусках подряд — событие закрыто');
+  setRoutes([{ match: /WSW_Netz_Marker\.js/, reply: pre }]);
+  await runSource(env, 'wswnetz');
+  setRoutes([{ match: /WSW_Netz_Marker\.js/, reply: 503 }]);
+  ok(!(await runSource(env, 'wswnetz')).ok, 'файл недоступен — ошибка источника');
 }
 
 // ================= Погода (DWD через Bright Sky) =================
@@ -826,7 +889,7 @@ console.log('\n[api] публичный и админский API');
 
   res = await get('/api/status');
   body = await res.json();
-  ok(Array.isArray(body.sources) && body.sources.length === 6, '/api/status: шесть источников (с WSW)');
+  ok(Array.isArray(body.sources) && body.sources.length === 8, '/api/status: восемь источников (с WSW, Rundschau, WSW Netz)');
   ok(body.sources.every((s) => s.stale), 'источники без успешных запусков помечены stale');
   ok(!JSON.stringify(body).includes('last_error"'), 'публично нет текста ошибок');
 }
