@@ -7,12 +7,14 @@ import { NEIGHBOR_NAMES, splitNeighbor, backfillFullText } from './sources/press
 import * as wuppertal from './sources/wuppertal.js';
 import * as mobidrom from './sources/mobidrom.js';
 import * as wsw from './sources/wsw.js';
+import * as rundschau from './sources/rundschau.js';
+import * as wswnetz from './sources/wswnetz.js';
 import { sweepExpired, cleanupOld } from './events.js';
 import { geocodeStreet } from './geo.js';
 import { translatePending } from './translate.js';
 import { ISO, truncate } from './util.js';
 
-export const SOURCES = { autobahn, nina, presseportal, wuppertal, mobidrom, wsw };
+export const SOURCES = { autobahn, nina, presseportal, wuppertal, mobidrom, wsw, rundschau, wswnetz };
 
 // Должно совпадать с [triggers].crons в wrangler.toml.
 export const CRON_MAP = {
@@ -20,7 +22,7 @@ export const CRON_MAP = {
   '*/5 * * * *': ['nina'],
   '*/10 * * * *': ['presseportal', '__maintenance'],
   // отдельное выражение: у каждого запуска свой лимит подзапросов (Workers Free — 50), а переводы идут в */10
-  '2-59/10 * * * *': ['wuppertal', 'mobidrom', 'wsw']
+  '2-59/10 * * * *': ['wuppertal', 'mobidrom', 'wsw', 'rundschau', 'wswnetz']
 };
 
 export function makeCtx(env) {
