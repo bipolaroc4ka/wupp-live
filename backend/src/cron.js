@@ -1,4 +1,4 @@
-// Планировщик: запуск источников, учёт состояния, служебные задачи.
+// Планировщик: запуск источников, учёт состояния, служебные задачи
 
 import * as autobahn from './sources/autobahn.js';
 import * as nina from './sources/nina.js';
