@@ -71,12 +71,12 @@ function tag(block, names) {
 }
 
 // Разбор RSS и Atom. Возвращает [{ id, title, url, published, description }]
-export function parseFeed(xml) {
+export function parseFeed(xml, urlFn = safeHttps) {
   const blocks = String(xml || '').slice(0, MAX_XML_CHARS).match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) || [];
   const out = [];
   for (const b of blocks.slice(0, MAX_ITEMS_PER_FEED)) {
     const href = (b.match(/<link\b[^>]*\bhref=["']([^"']+)["']/i) || [])[1];
-    const url = safeHttps(href ? decode(href) : tag(b, ['link']));
+    const url = urlFn(href ? decode(href) : tag(b, ['link']));
     const title = tag(b, ['title']);
     const dateStr = tag(b, ['pubDate', 'published', 'updated', 'date']);
     const published = Date.parse(dateStr);
