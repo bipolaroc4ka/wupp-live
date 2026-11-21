@@ -190,7 +190,8 @@
   // ---------- карта ----------
   const map = L.map('map', {
     zoomControl: false, minZoom: 10, preferCanvas: true,
-    maxBounds: L.latLngBounds(CFG.CITY.bounds).pad(0.8)
+    // Запас большой нарочно: если область меньше окна, Leaflet принудительно центрирует её по всему окну и игнорирует отступы под панель
+    maxBounds: L.latLngBounds(CFG.CITY.bounds).pad(4)
   });
   mapInst = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
