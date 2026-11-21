@@ -514,6 +514,17 @@ console.log('\n[wsw] ленты WSW: только изменения движе�
   eq((await rows(env, "SELECT id FROM events WHERE source = 'wsw'")).length, 2, 'при ошибке записи сохранены');
 }
 
+// ================= Заголовки официальных предупреждений =================
+console.log('\n[translate] стандартные заголовки предупреждений');
+{
+  const { officialWarningTitle: ow } = await import('../src/translate.js');
+  eq(ow('Amtliche WARNUNG vor MARKANTER GLÄTTE'), 'Официальное предупреждение: значительная гололедица', 'markanter Glätte');
+  eq(ow('Amtliche WARNUNG vor STARKEM FROST'), 'Официальное предупреждение: сильный мороз', 'starkem Frost');
+  eq(ow('Amtliche UNWETTERWARNUNG vor STARKEM DAUERREGEN'), 'Предупреждение о непогоде: сильный затяжной дождь', 'Unwetterwarnung');
+  eq(ow('Amtliche WARNUNG vor GLATTEIS'), 'Официальное предупреждение: гололёд', 'без прилагательного');
+  eq([ow('Amtliche WARNUNG vor ETWAS UNBEKANNTEM'), ow('Brand in Elberfeld')], [null, null], 'неизвестное и обычные заголовки не трогаются');
+}
+
 // ================= WSW Netz (карта störungen) =================
 console.log('\n[wswnetz] карта: тихий режим, отключение, смена формата');
 {
