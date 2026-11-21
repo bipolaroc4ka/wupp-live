@@ -154,128 +154,17 @@
     return `${mi} ${t('u_m')}`;
   }
 
-    // ---------- карта и границы перемещения ----------
-  // Центрирование города учитывает боковую панель на десктопе.
-  // Ограничения перемещения рассчитываются динамически с учётом
-  // размеров экрана и свободной области карты.
-
-  const cityFitOptions = () => {
-    if (window.matchMedia('(min-width: 900px)').matches) {
-      return {
-        paddingTopLeft: [400, 100],
-        paddingBottomRight: [20, 20]
-      };
-    }
-
-    return { padding: [20, 20] };
-  };
-
+  // ---------- карта ----------
+  // Карта ограничена Wuppertal: дальше границ города (с небольшим запасом) не прокрутить и не отдалить
+  const CITY_VIEW = L.latLngBounds(CFG.CITY.bounds).pad(0.12);
   const map = L.map('map', {
-    zoomControl: false,
-    minZoom: 5,
-    maxBoundsViscosity: 1.0,
-    preferCanvas: true
+    zoomControl: false, minZoom: 10, preferCanvas: true,
+    maxBounds: CITY_VIEW, maxBoundsViscosity: 1.0
   });
-
   mapInst = map;
-
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-  // Рассчитываем допустимую область перемещения.
-  // Она учитывает не только границы Wuppertal, но и свободное
-  // пространство карты за пределами города, необходимое для
-  // правильного центрирования при наличии боковой панели.
-  function getCityMaxBounds() {
-    const zoom = map.getZoom();
-    const size = map.getSize();
-
-    const cityBounds = L.latLngBounds(CFG.CITY.bounds);
-
-    const northWest = map.project(cityBounds.getNorthWest(), zoom);
-    const southEast = map.project(cityBounds.getSouthEast(), zoom);
-
-    const desktop = window.matchMedia('(min-width: 900px)').matches;
-
-    const padding = desktop
-      ? { left: 400, right: 20, top: 100, bottom: 20 }
-      : { left: 20, right: 20, top: 20, bottom: 20 };
-
-    const cityWidth = southEast.x - northWest.x;
-    const cityHeight = southEast.y - northWest.y;
-
-    // Если город занимает меньше места, чем доступная область карты,
-    // расширяем ограничения симметрично, чтобы карта не смещалась.
-    const extraX = Math.max(
-      0,
-      (size.x - (cityWidth + padding.left + padding.right)) / 2
-    );
-
-    const extraY = Math.max(
-      0,
-      (size.y - (cityHeight + padding.top + padding.bottom)) / 2
-    );
-
-    const boundsNorthWest = map.unproject([
-      northWest.x - padding.left - extraX,
-      northWest.y - padding.top - extraY
-    ], zoom);
-
-    const boundsSouthEast = map.unproject([
-      southEast.x + padding.right + extraX,
-      southEast.y + padding.bottom + extraY
-    ], zoom);
-
-    return L.latLngBounds(boundsNorthWest, boundsSouthEast);
-  }
-
-  function updateCityMaxBounds() {
-    if (!map || !map.getSize().x || !map.getSize().y) return;
-
-    map.setMaxBounds(getCityMaxBounds());
-  }
-
-  function fitCity(animate = false) {
-    const options = cityFitOptions();
-
-    if (animate) {
-      map.flyToBounds(CFG.CITY.bounds, options);
-    } else {
-      map.fitBounds(CFG.CITY.bounds, options);
-    }
-  }
-
-  function fitDistrict(district) {
-    if (!district) {
-      return fitCity(true);
-    }
-
-    map.flyToBounds(
-      L.latLng(district.c).toBounds(district.r * 2),
-      cityFitOptions()
-    );
-  }
-
-  // Пересчитываем ограничения при изменении масштаба и размеров карты.
-  map.on('zoomend', updateCityMaxBounds);
-  map.on('resize', updateCityMaxBounds);
-
-  // Leaflet должен получить реальные размеры контейнера после первого layout.
-  requestAnimationFrame(() => {
-    map.invalidateSize({ pan: false });
-
-    // Сначала правильно позиционируем город.
-    fitCity(false);
-
-    // Затем устанавливаем ограничения с учётом текущего масштаба.
-    updateCityMaxBounds();
-  });
-
-  // Leaflet должен получить реальные размеры контейнера после первого layout браузера.
-  // Иначе fitBounds может рассчитать центр по промежуточной ширине/высоте.
-  requestAnimationFrame(() => {
-    map.invalidateSize({ pan: false });
-    fitCity(false);
-  });
+  map.fitBounds(CFG.CITY.bounds);
+  if (map.getBoundsZoom && map.setMinZoom) { const z = Math.floor(map.getBoundsZoom(CITY_VIEW)); map.setMinZoom(Math.max(10, z)); }
   // Если тайлы не грузятся (блокировка OSM, нет Referer, нет сети), говорим об этом, а не показываем пустую карту.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
@@ -499,14 +388,10 @@
   }
 
   function resetFilters() {
-    const districtChanged = !!state.district;
-    state.district = '';
-    state.groupsOn = new Set(GROUPS);
+    state.district = ''; state.groupsOn = new Set(GROUPS);
     const hoursChanged = state.hours !== DEFAULT_HOURS;
     state.hours = DEFAULT_HOURS;
-    applyI18n();
-    render();
-    if (districtChanged) fitCity(true);
+    applyI18n(); render();
     if (hoursChanged) load();
   }
 
@@ -1178,21 +1063,18 @@
 
   $('#districtSel').addEventListener('change', (e) => {
     state.district = e.target.value;
-    const district = DISTRICTS.find((item) => item.id === state.district);
-    fitDistrict(district);
+    const d = DISTRICTS.find((x) => x.id === state.district);
+    if (d) map.flyToBounds(L.latLng(d.c).toBounds(d.r * 2), { padding: [20, 20] });
+    else map.flyToBounds(CFG.CITY.bounds);
     render();
   });
-
-  // Кнопка «Весь город» сбрасывает район и возвращает карту к Wuppertal.
+  $('#timeSel').addEventListener('change', (e) => { state.hours = parseInt(e.target.value, 10) || DEFAULT_HOURS; render(); load(); });
   $('#cityBtn').addEventListener('click', () => {
-    state.district = '';
-    $('#districtSel').value = '';
-    closeDetail();
-    closeDropdowns();
-    fitCity(true);
+    state.district = ''; $('#districtSel').value = '';
+    closeDetail(); closeDropdowns();
+    map.flyToBounds(CFG.CITY.bounds);
     render();
   });
-
   map.on('click', () => { closeDropdowns(); if (!isDesktop()) setSheet('peek'); });
 
   // Внешние ссылки в Telegram открываем средствами Telegram, чтобы не уходить из Mini App.
