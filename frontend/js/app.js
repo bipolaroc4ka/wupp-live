@@ -215,10 +215,10 @@
     if (tileOk === 0 && tileErr >= 4 && !state.mapProblem) { state.mapProblem = 'tileFail'; syncFreshness(); }
   });
 
+  const WORLD = [[85, -180], [85, 180], [-85, 180], [-85, -180]];
   const cityRings = ringsOf(window.WL_BORDER);
   if (cityRings.length) {
-    const world = [[85, -180], [85, 180], [-85, 180], [-85, -180]];
-    borderMask = L.polygon([world, ...cityRings], { stroke: false, fillOpacity: 0.62, interactive: false }).addTo(map);
+    borderMask = L.polygon([WORLD, ...cityRings], { stroke: false, fillOpacity: 0.62, interactive: false }).addTo(map);
     borderLine = L.polygon(cityRings, { fill: false, weight: 2, dashArray: '7 6', interactive: false }).addTo(map);
     styleBorder();
   }
@@ -287,7 +287,7 @@
   }
   const pool = (tab) => state.events.filter((ev) => (isLongTerm(ev) ? 'long' : 'now') === tab && inArea(ev));
   const visibleEvents = () => pool(state.tab).filter((ev) => state.groupsOn.has(groupOf(ev.category))).sort(byImportance);
-  const filterCount = () => (state.district ? 1 : 0) + (state.hours !== DEFAULT_HOURS ? 1 : 0) + (state.groupsOn.size < GROUPS.length ? 1 : 0);
+  const filterCount = () => (state.district ? 1 : 0) + (state.groupsOn.size < GROUPS.length ? 1 : 0);
 
   // Машинный перевод есть только на русский и только если пришёл с сервера; оригинал всегда доступен.
   function texts(ev, original) {
@@ -300,8 +300,6 @@
   function applyI18n() {
     document.documentElement.lang = I18N[state.lang].htmlLang;
     $('#lblDistrict').textContent = t('district');
-    $('#lblTime').textContent = t('period');
-    $('#periodHint').textContent = t('periodHint');
     $('#cityBtn').textContent = t('wholeCity');
     $('#menuBtn').setAttribute('aria-label', t('menu'));
     $('#dClose').setAttribute('aria-label', t('close'));
@@ -331,9 +329,6 @@
     ds.replaceChildren(el('option', { value: '', text: t('allDistricts') }),
       ...DISTRICTS.map((d) => el('option', { value: d.id, text: d.name })));
     ds.value = state.district;
-    const ts = $('#timeSel');
-    ts.replaceChildren(...HOURS_OPTIONS.map((h) => el('option', { value: String(h), text: t('t' + h) })));
-    ts.value = String(state.hours);
 
     // меню: язык, тема, ссылки
     const seg = (key, values, current, onPick) => el('div', { class: 'seg', role: 'group', 'aria-label': t(key) },
@@ -436,10 +431,7 @@
 
   function resetFilters() {
     state.district = ''; state.groupsOn = new Set(GROUPS);
-    const hoursChanged = state.hours !== DEFAULT_HOURS;
-    state.hours = DEFAULT_HOURS;
     applyI18n(); render();
-    if (hoursChanged) load();
   }
 
   function renderList(evs) {
@@ -472,7 +464,64 @@
     }, ICON.forCategory(ev.category, 18));
   }
 
+  // Событие относится к Вупперталю, но его координата (участок автобана и т.п.) может лежать за границей города.
+  // Маркер остаётся на своём месте, а вокруг него в маске затемнения делается «окно», чтобы карта была видна.
+  function insideRing(pt, ring) {
+    let in_ = false;
+    for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
+      const [yi, xi] = ring[i], [yk, xk] = ring[k];
+      if ((yi > pt[0]) !== (yk > pt[0]) && pt[1] < ((xk - xi) * (pt[0] - yi)) / (yk - yi) + xi) in_ = !in_;
+    }
+    return in_;
+  }
+  const inCity = (lat, lon) => cityRings.some((r) => insideRing([lat, lon], r));
+  // ближайшая точка границы города
+  function nearestBorder(lat, lon) {
+    const kx = Math.cos(lat * Math.PI / 180);
+    let best = null, bd = Infinity;
+    for (const r of cityRings) {
+      for (let i = 0; i < r.length; i++) {
+        const a = r[i], b = r[(i + 1) % r.length];
+        const ax = a[1] * kx, ay = a[0], dx = b[1] * kx - ax, dy = b[0] - ay;
+        const len = dx * dx + dy * dy;
+        let u = len ? ((lon * kx - ax) * dx + (lat - ay) * dy) / len : 0;
+        u = Math.max(0, Math.min(1, u));
+        const q = [ay + dy * u, (ax + dx * u) / kx];
+        const d = (q[0] - lat) ** 2 + ((q[1] - lon) * kx) ** 2;
+        if (d < bd) { bd = d; best = q; }
+      }
+    }
+    return best;
+  }
+  // Кольцо-«окно» вокруг точки: части круга, попавшие внутрь города, прижимаются к границе,
+  // чтобы окно не перекрывалось с городом (иначе заливка с чётно-нечётным правилом снова затемнит пересечение).
+  const WINDOW_R = 2000;
+  function windowRing(lat, lon) {
+    const kx = Math.cos(lat * Math.PI / 180), ring = [];
+    for (let i = 0; i < 28; i++) {
+      const a = (i / 28) * 2 * Math.PI;
+      const p = [lat + (WINDOW_R / 111320) * Math.sin(a), lon + (WINDOW_R / (111320 * kx)) * Math.cos(a)];
+      ring.push(inCity(p[0], p[1]) ? nearestBorder(p[0], p[1]) : p);
+    }
+    return ring;
+  }
+  let lastWindowSig = '';
+  function updateMaskWindows(evs) {
+    if (!borderMask) return;
+    const centers = [];
+    for (const ev of evs) {
+      if (ev.latitude == null || ev.longitude == null || inCity(ev.latitude, ev.longitude)) continue;
+      if (centers.some((c) => haversine(c, [ev.latitude, ev.longitude]) < WINDOW_R)) continue; // близкие окна не накладываем
+      centers.push([ev.latitude, ev.longitude]);
+    }
+    const sig = centers.map((c) => c.join(',')).join('|');
+    if (sig === lastWindowSig) return;
+    lastWindowSig = sig;
+    borderMask.setLatLngs([WORLD, ...cityRings, ...centers.map((c) => windowRing(c[0], c[1]))]);
+  }
+
   function renderMap(evs) {
+    updateMaskWindows(evs);
     // Перерисовываем только при изменении данных: иначе раз в минуту маркеры мигают и сбрасывается раскрытый кластер.
     const sig = evs.map((e) => `${e.id}:${e.status}:${e.updated_at}`).join('|') + '#' + state.lang + state.tab + document.documentElement.dataset.theme;
     if (sig === lastMapSig) return;
@@ -1118,7 +1167,6 @@
     else map.flyToBounds(CFG.CITY.bounds, viewPad());
     render();
   });
-  $('#timeSel').addEventListener('change', (e) => { state.hours = parseInt(e.target.value, 10) || DEFAULT_HOURS; render(); load(); });
   $('#cityBtn').addEventListener('click', () => {
     state.district = ''; $('#districtSel').value = '';
     closeDetail(); closeDropdowns();

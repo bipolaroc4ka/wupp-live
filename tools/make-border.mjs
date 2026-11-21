@@ -9,9 +9,14 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'frontend', 'js'
 const URL_Q = 'https://nominatim.openstreetmap.org/search?' + new URLSearchParams({
   q: 'Wuppertal, Nordrhein-Westfalen, Deutschland', format: 'jsonv2', polygon_geojson: '1', polygon_threshold: '0.0002', limit: '5', countrycodes: 'de'
 });
-const res = await fetch(URL_Q, { headers: { 'user-agent': 'WuppertalLive-border/1.0 (one-time boundary download)', 'accept-language': 'de' } });
-if (!res.ok) { console.error('Nominatim HTTP', res.status); process.exit(1); }
-const list = await res.json();
+// Для проверки без сети: BORDER_FIXTURE=файл.json (ответ Nominatim) вместо запроса
+let list;
+if (process.env.BORDER_FIXTURE) list = JSON.parse((await import('node:fs')).readFileSync(process.env.BORDER_FIXTURE, 'utf8'));
+else {
+  const res = await fetch(URL_Q, { headers: { 'user-agent': 'WuppertalLive-border/1.0 (one-time boundary download)', 'accept-language': 'de' } });
+  if (!res.ok) { console.error('Nominatim HTTP', res.status); process.exit(1); }
+  list = await res.json();
+}
 const hit = list.find((r) => r.category === 'boundary' && r.type === 'administrative' && r.geojson && /Polygon/.test(r.geojson.type));
 if (!hit) { console.error('Граница не найдена. Результаты:', list.map((r) => `${r.category}/${r.type} ${r.display_name}`)); process.exit(1); }
 console.log('Найдено:', hit.display_name, `(${hit.geojson.type})`);
@@ -32,7 +37,14 @@ function dp(pts, t) {
 }
 const round = (p) => [Math.round(p[0] * 1e5) / 1e5, Math.round(p[1] * 1e5) / 1e5];
 const polys = hit.geojson.type === 'Polygon' ? [hit.geojson.coordinates] : hit.geojson.coordinates;
-const outer = polys.map((p) => dp(p[0], tol).map(round)).filter((r) => r.length > 3);
+function ring(r) { // замкнутое кольцо: первая и последняя точки совпадают, поэтому делим его пополам
+  if (r.length < 5) return r;
+  let m = 1, far = -1;
+  for (let i = 1; i < r.length - 1; i++) { const d = Math.hypot(r[i][0] - r[0][0], r[i][1] - r[0][1]); if (d > far) { far = d; m = i; } }
+  return [...dp(r.slice(0, m + 1), tol).slice(0, -1), ...dp(r.slice(m), tol)];
+}
+const outer = polys.map((p) => ring(p[0]).map(round)).filter((r) => r.length > 3);
+if (!outer.length) { console.error('После упрощения не осталось ни одного кольца, файл не записан.'); process.exit(1); }
 const geo = { type: 'MultiPolygon', coordinates: outer.map((r) => [r]) };
 const pts = outer.reduce((n, r) => n + r.length, 0);
 const lons = outer.flat().map((p) => p[0]), lats = outer.flat().map((p) => p[1]);
