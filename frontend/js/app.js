@@ -154,14 +154,48 @@
     return `${mi} ${t('u_m')}`;
   }
 
-  // ---------- карта ----------
+  // Положение города рассчитывается с учётом места под боковую панель на десктопе.
+  // Ограничений maxBounds намеренно нет: карту можно свободно перемещать за пределы Wuppertal.
+  const cityFitOptions = () => {
+    if (window.matchMedia('(min-width: 900px)').matches) {
+      return {
+        paddingTopLeft: [400, 100],
+        paddingBottomRight: [20, 20]
+      };
+    }
+
+    return { padding: [20, 20] };
+  };
+
   const map = L.map('map', {
-    zoomControl: false, minZoom: 10, preferCanvas: true,
-    maxBounds: L.latLngBounds(CFG.CITY.bounds).pad(0.8)
+    zoomControl: false,
+    minZoom: 5,
+    preferCanvas: true
   });
+
   mapInst = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-  map.fitBounds(CFG.CITY.bounds);
+
+  function fitCity(animate = false) {
+    const options = cityFitOptions();
+    if (animate) map.flyToBounds(CFG.CITY.bounds, options);
+    else map.fitBounds(CFG.CITY.bounds, options);
+  }
+
+  function fitDistrict(district) {
+    if (!district) return fitCity(true);
+    map.flyToBounds(
+      L.latLng(district.c).toBounds(district.r * 2),
+      cityFitOptions()
+    );
+  }
+
+  // Leaflet должен получить реальные размеры контейнера после первого layout браузера.
+  // Иначе fitBounds может рассчитать центр по промежуточной ширине/высоте.
+  requestAnimationFrame(() => {
+    map.invalidateSize({ pan: false });
+    fitCity(false);
+  });
   // Если тайлы не грузятся (блокировка OSM, нет Referer, нет сети), говорим об этом, а не показываем пустую карту.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
@@ -385,10 +419,14 @@
   }
 
   function resetFilters() {
-    state.district = ''; state.groupsOn = new Set(GROUPS);
+    const districtChanged = !!state.district;
+    state.district = '';
+    state.groupsOn = new Set(GROUPS);
     const hoursChanged = state.hours !== DEFAULT_HOURS;
     state.hours = DEFAULT_HOURS;
-    applyI18n(); render();
+    applyI18n();
+    render();
+    if (districtChanged) fitCity(true);
     if (hoursChanged) load();
   }
 
@@ -1060,18 +1098,21 @@
 
   $('#districtSel').addEventListener('change', (e) => {
     state.district = e.target.value;
-    const d = DISTRICTS.find((x) => x.id === state.district);
-    if (d) map.flyToBounds(L.latLng(d.c).toBounds(d.r * 2), { padding: [20, 20] });
-    else map.flyToBounds(CFG.CITY.bounds);
+    const district = DISTRICTS.find((item) => item.id === state.district);
+    fitDistrict(district);
     render();
   });
-  $('#timeSel').addEventListener('change', (e) => { state.hours = parseInt(e.target.value, 10) || DEFAULT_HOURS; render(); load(); });
+
+  // Кнопка «Весь город» сбрасывает район и возвращает карту к Wuppertal.
   $('#cityBtn').addEventListener('click', () => {
-    state.district = ''; $('#districtSel').value = '';
-    closeDetail(); closeDropdowns();
-    map.flyToBounds(CFG.CITY.bounds);
+    state.district = '';
+    $('#districtSel').value = '';
+    closeDetail();
+    closeDropdowns();
+    fitCity(true);
     render();
   });
+
   map.on('click', () => { closeDropdowns(); if (!isDesktop()) setSheet('peek'); });
 
   // Внешние ссылки в Telegram открываем средствами Telegram, чтобы не уходить из Mini App.
