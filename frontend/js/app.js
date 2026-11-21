@@ -49,6 +49,7 @@
   const state = {
     // Немецкий — язык по умолчанию для всех. Язык браузера и Telegram не учитывается; выбор из меню запоминается (ключ wl_lang2).
     lang: I18N[store.get('wl_lang2')] ? store.get('wl_lang2') : 'de',
+    mapStyle: store.get('wl_mapstyle') === 'classic' ? 'classic' : 'wupper',
     themePref: ['auto', 'light', 'dark'].includes(store.get('wl_theme')) ? store.get('wl_theme') : 'auto',
     hours: DEFAULT_HOURS,
     groupsOn: new Set(GROUPS),
@@ -93,7 +94,7 @@
   function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }
 
   // ---------- высота приложения, тема, Telegram ----------
-  const PALETTE = { dark: '#172126', light: '#ffffff' };
+  const PALETTE = { dark: '#151a42', light: '#ffffff' };
   let appH = 0;
   let mapInst = null; // карта создаётся ниже; typeof на const до объявления бросил бы ReferenceError
   function setAppH() {
@@ -121,6 +122,7 @@
   }
   setAppH();
   window.addEventListener('resize', setAppH);
+  document.documentElement.dataset.mapstyle = state.mapStyle;
   applyTheme();
   TG.ready.then((ok) => {
     if (!ok) return;
@@ -293,7 +295,8 @@
       }));
     $('#langSeg').replaceChildren(
       seg('language', [['de', 'Deutsch'], ['ru', 'Русский']], state.lang, setLang),
-      seg('theme', [['auto', t('themeAuto')], ['light', t('themeLight')], ['dark', t('themeDark')]], state.themePref, setThemePref));
+      seg('theme', [['auto', t('themeAuto')], ['light', t('themeLight')], ['dark', t('themeDark')]], state.themePref, setThemePref),
+      seg('mapStyle', [['wupper', t('msWupper')], ['classic', t('msClassic')]], state.mapStyle, setMapStyle));
     setKids($('#miAbout'), ICON.make('info', 20), t('about'));
   }
 
@@ -303,6 +306,12 @@
     store.set('wl_lang2', l);
     applyI18n(); render();
     if (!$('#about').hidden) openAbout();
+  }
+  function setMapStyle(v) {
+    state.mapStyle = v;
+    store.set('wl_mapstyle', v);
+    document.documentElement.dataset.mapstyle = v;
+    applyI18n();
   }
   function setThemePref(p) {
     state.themePref = p;

@@ -73,6 +73,7 @@ window.WL_I18N = {
     emptyLong: 'Долгосрочных работ по выбранным условиям нет.',
     filters: 'Фильтры', resetFilters: 'Сбросить фильтры', menu: 'Меню', language: 'Язык', theme: 'Тема',
     themeAuto: 'Авто', themeLight: 'Светлая', themeDark: 'Тёмная',
+    mapStyle: 'Вид карты', msWupper: 'Wupper', msClassic: 'Классика',
     periodHint: 'Период относится к недавним сообщениям. Действующие события источников показываются независимо от него.',
     machTr: 'Автоперевод с немецкого, возможны неточности.', origDe: 'Оригинал на немецком.', showOrig: 'Показать оригинал', showTr: 'Показать перевод',
     lagPub: 'опубликовано через {d}', u_d: 'д', u_h: 'ч', u_m: 'мин', toList: 'К списку', expandList: 'Развернуть список', collapseList: 'Свернуть список'
@@ -150,6 +151,7 @@ window.WL_I18N = {
     emptyLong: 'Keine langfristigen Maßnahmen für die gewählten Filter.',
     filters: 'Filter', resetFilters: 'Filter zurücksetzen', menu: 'Menü', language: 'Sprache', theme: 'Design',
     themeAuto: 'Auto', themeLight: 'Hell', themeDark: 'Dunkel',
+    mapStyle: 'Kartenstil', msWupper: 'Wupper', msClassic: 'Klassisch',
     periodHint: 'Der Zeitraum gilt für neueste Meldungen. Aktive Meldungen der Quellen werden unabhängig davon angezeigt.',
     machTr: '', origDe: '', showOrig: '', showTr: '',
     lagPub: 'veröffentlicht nach {d}', u_d: 'T', u_h: 'Std', u_m: 'Min', toList: 'Zur Liste', expandList: 'Liste aufklappen', collapseList: 'Liste einklappen'

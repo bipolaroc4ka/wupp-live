@@ -2,11 +2,14 @@
    Высота приложения задаётся переменной --app-h (JS берёт её из Telegram viewportStableHeight или innerHeight):
    единицы vh в Mini App «прыгают» при раскрытии/сворачивании окна. */
 
+/* «Wupper»: ночная и дневная схемы. Основа: индиго (ночь) и голубая бумага (день), сигнальные цвета категорий,
+   карта перекрашена SVG-фильтрами из index.html (#wl-night, #wl-day). Классический вид карты включается в меню. */
 :root {
-  --bg: #0f1619; --surface: #172126; --surface-2: #1f2c32; --line: #2b3b42;
-  --text: #e8efed; --muted: #97aaa7; --accent: #5cc79a; --accent-ink: #07231a;
-  --danger: #f0645a; --warn: #e8b04a; --shadow: 0 8px 28px rgba(0, 0, 0, .45);
-  --c-emergency: #ee5a5f; --c-traffic: #f39045; --c-roadworks: #dbad1f; --c-transit: #5b9cf8; --c-infra: #2cc0d3; --c-events: #b07be8;
+  --bg: #0e1230; --surface: #151a42; --surface-2: #1e2558; --line: #2f3878;
+  --text: #eef0ff; --muted: #9ba5dc; --accent: #8d9bff; --accent-ink: #0b0e26; --ok: #46f0c0;
+  --danger: #ff5470; --warn: #ffc547; --shadow: 0 8px 28px rgba(3, 5, 25, .6);
+  --c-emergency: #ff4d6a; --c-traffic: #ff8a2a; --c-roadworks: #ffd23f; --c-transit: #38e8c6; --c-infra: #3db8ff; --c-events: #b98bff;
+  --pin-fg: #0b0e26; --pin-ring: #f3f5ff; --pin-drop: rgba(2, 3, 18, .75);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --safe-t: calc(env(safe-area-inset-top, 0px) + var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
   --safe-b: calc(env(safe-area-inset-bottom, 0px) + var(--tg-safe-area-inset-bottom, 0px) + var(--tg-content-safe-area-inset-bottom, 0px));
@@ -16,10 +19,11 @@
   --peek: 176px;
 }
 :root[data-theme="light"] {
-  --bg: #f2f5f4; --surface: #ffffff; --surface-2: #eaefee; --line: #d3dcda;
-  --text: #121c1f; --muted: #546866; --accent: #187a57; --accent-ink: #ffffff;
-  --danger: #c93a32; --warn: #9a6a00; --shadow: 0 8px 28px rgba(20, 40, 36, .18);
-  --c-emergency: #d83a40; --c-traffic: #d9701f; --c-roadworks: #a97d00; --c-transit: #2f73dd; --c-infra: #0d8fa1; --c-events: #8a4fd0;
+  --bg: #e9efff; --surface: #ffffff; --surface-2: #eef2ff; --line: #c9d3f6;
+  --text: #0f1646; --muted: #4a5594; --accent: #3b4fe0; --accent-ink: #ffffff; --ok: #0a8f68;
+  --danger: #d42a4a; --warn: #9a6a00; --shadow: 0 8px 28px rgba(30, 45, 140, .22);
+  --c-emergency: #e5254d; --c-traffic: #e8650f; --c-roadworks: #b88700; --c-transit: #0c9e83; --c-infra: #0b86d1; --c-events: #7c3fd6;
+  --pin-fg: #ffffff; --pin-ring: #ffffff; --pin-drop: rgba(20, 30, 110, .45);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -33,7 +37,9 @@ a { color: var(--accent); }
 svg { display: block; flex: none; }
 
 #map { position: fixed; inset: 0; background: var(--bg); z-index: 0; }
-:root[data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.88) contrast(.92) saturate(.55); }
+:root[data-mapstyle="wupper"][data-theme="dark"] .leaflet-tile-pane { filter: url(#wl-night); }
+:root[data-mapstyle="wupper"][data-theme="light"] .leaflet-tile-pane { filter: url(#wl-day); }
+:root[data-mapstyle="classic"][data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.88) contrast(.92) saturate(.55); }
 .leaflet-container { font-family: var(--font); background: var(--bg); }
 .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 85%, transparent) !important; color: var(--muted) !important; font-size: 10px; }
 .leaflet-control-attribution a { color: var(--muted) !important; }
@@ -44,19 +50,20 @@ svg { display: block; flex: none; }
 #topbar { position: fixed; z-index: 30; top: 0; left: 0; right: 0; padding: var(--safe-t) var(--safe-r) 0 var(--safe-l);
   background: var(--surface); border-bottom: 1px solid var(--line); }
 .bar { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 8px 0 14px; }
-.brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; font-weight: 650; letter-spacing: .1px; }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; font-weight: 800; letter-spacing: -.2px; font-size: 16.5px; }
 .brand .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* знак: подвесная дорога Шванбан — рельс и висящий вагон */
 .mark { position: relative; width: 22px; height: 18px; flex: none; }
 .mark::before { content: ""; position: absolute; left: 0; right: 0; top: 1px; height: 3px; border-radius: 2px; background: var(--muted); }
-.mark::after { content: ""; position: absolute; left: 3px; right: 3px; top: 6px; height: 10px; border-radius: 3px 3px 5px 5px; background: var(--accent); }
+.mark::after { content: ""; position: absolute; left: 3px; right: 3px; top: 6px; height: 10px; border-radius: 3px 3px 5px 5px; background: var(--accent); animation: glide .9s .25s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes glide { from { transform: translateX(-30px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .fresh { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border-radius: 17px; border: 1px solid var(--line);
   background: var(--surface-2); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .fresh b { font-weight: 650; }
 .fresh .lbl { color: var(--muted); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-.dot.ok { background: var(--accent); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--danger); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--danger); }
 .iconbtn, .closebtn { display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; background: transparent; color: var(--text); }
 .iconbtn:hover, .closebtn:hover, .iconbtn[aria-expanded="true"] { background: var(--surface-2); }
 
@@ -124,14 +131,14 @@ body.has-detail #sheet { visibility: hidden; }
 
 .item { --c: var(--muted); display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 11px 16px 11px 13px; border: 0; border-left: 3px solid var(--c); background: transparent; text-align: left; color: var(--text); }
 .item:hover { background: var(--surface-2); }
-.item .ico { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--surface)); flex: none; margin-top: 1px; }
+.item .ico { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--surface)); flex: none; margin-top: 1px; }
 .item .body { min-width: 0; display: grid; gap: 3px; }
 .item .t { font-weight: 600; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .item .m { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 13px; color: var(--muted); }
 .st { display: inline-flex; align-items: center; gap: 5px; }
 .st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .st.LIVE { color: var(--danger); font-weight: 700; } .st.LIVE::before { background: var(--danger); animation: blink 1.6s ease-in-out infinite; }
-.st.ACTIVE { color: var(--accent); } .st.ACTIVE::before { background: var(--accent); }
+.st.ACTIVE { color: var(--ok); } .st.ACTIVE::before { background: var(--ok); }
 .st.RECENT::before { background: transparent; border: 1.5px dashed var(--muted); }
 @keyframes blink { 50% { opacity: .25; } }
 
@@ -147,7 +154,7 @@ body.has-detail #sheet { visibility: hidden; }
 .d-badges { display: flex; flex-wrap: wrap; gap: 6px; padding-right: 40px; margin: 6px 0 10px; }
 .badge { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; background: var(--surface-2); }
 .badge.LIVE { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
-.badge.ACTIVE { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.badge.ACTIVE { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
 .badge.official { color: var(--text); }
 .detail h2 { margin: 0 0 8px; font-size: 19px; line-height: 1.25; }
 .d-desc { margin: 0 0 12px; color: var(--text); white-space: pre-line; line-height: 1.45; }
@@ -223,18 +230,22 @@ body.has-detail .wx { display: none; }
 .legend { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.55; }
 
 /* ---------- маркеры ---------- */
+/* Маркер = подвесной вагон Шванбан: скруглённый корпус, «подвес» сверху, жёсткая тень как у трафаретной печати.
+   Заливка: событие идёт сейчас (LIVE/ACTIVE); пустой корпус с пунктиром: сообщение «недавно», актуальность неизвестна. */
 .pin-wrap { background: none; border: 0; }
-.pin { --c: var(--muted); position: relative; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--c);
-  background: var(--surface); border: 2.5px solid var(--c); box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
-.pin.st-LIVE::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; border: 2px solid var(--c); animation: ping 1.8s ease-out infinite; }
-.pin.st-ACTIVE { box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 28%, transparent), 0 2px 8px rgba(0, 0, 0, .4); }
-.pin.st-RECENT { border-style: dashed; }
-.pin.approx { opacity: .9; }
-.pin.lt { opacity: .7; }
+.pin { --c: var(--muted); position: relative; width: 34px; height: 34px; border-radius: 12px 12px 14px 14px; display: grid; place-items: center;
+  background: var(--c); color: var(--pin-fg); border: 3px solid var(--pin-ring); box-shadow: 3px 4px 0 var(--pin-drop); }
+.pin::before { content: ""; position: absolute; left: 50%; top: -8px; width: 10px; height: 6px; margin-left: -5px; border-radius: 2px 2px 0 0; background: var(--pin-ring); }
+.pin.st-LIVE::after { content: ""; position: absolute; inset: -9px; border-radius: 17px; border: 2.5px solid var(--c); animation: ping 1.8s ease-out infinite; }
+.pin.st-ACTIVE { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 45%, transparent), 3px 4px 0 var(--pin-drop); }
+.pin.st-RECENT { background: var(--surface); color: var(--c); border: 3px dashed var(--c); box-shadow: 3px 4px 0 var(--pin-drop); }
+.pin.st-RECENT::before { background: var(--c); }
+.pin.approx { opacity: .92; }
+.pin.lt { opacity: .78; }
 .pin.pop { animation: pop .4s ease-out; }
 @keyframes ping { from { transform: scale(.8); opacity: .9; } to { transform: scale(1.5); opacity: 0; } }
 @keyframes pop { from { transform: scale(.3); } 60% { transform: scale(1.15); } }
-.cluster { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--text); font-weight: 700; border: 2.5px solid var(--accent); box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
+.cluster { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 15px; border: 3px solid var(--pin-ring); box-shadow: 3px 4px 0 var(--pin-drop); }
 
 /* ---------- мобильные: атрибуция OSM над панелью ---------- */
 @media (max-width: 899px) {
