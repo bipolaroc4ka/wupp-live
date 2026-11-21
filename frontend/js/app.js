@@ -93,10 +93,40 @@
   // replaceChildren, который не превращает null/false в текст «null»
   function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }
 
+  // ---------- отступы карты под панели ----------
+  // На десктопе слева стоит панель событий (400 px), на телефоне сверху шапка и снизу нижняя панель: центр города считаем по свободной части.
+  function viewPad() {
+    const bar = document.getElementById('topbar');
+    const top = (bar ? bar.offsetHeight : 100) + 8;
+    if (window.matchMedia('(min-width: 900px)').matches) return { paddingTopLeft: [412, top], paddingBottomRight: [16, 16] };
+    const sh = document.getElementById('sheet');
+    const bottom = Math.min(sh ? sh.offsetHeight : 176, Math.round(window.innerHeight * 0.46)) + 8;
+    return { paddingTopLeft: [10, top], paddingBottomRight: [10, bottom] };
+  }
+
+  // ---------- граница Wuppertal ----------
+  // Всё за пределами города затемняется по настоящей границе (js/city-border.js, создаётся tools/make-border.mjs).
+  // Нет файла с границей: ничего не рисуется, карта работает как обычно.
+  function ringsOf(geo) {
+    if (!geo || !Array.isArray(geo.coordinates)) return [];
+    const polys = geo.type === 'Polygon' ? [geo.coordinates] : geo.type === 'MultiPolygon' ? geo.coordinates : [];
+    return polys.map((p) => (p[0] || []).map((c) => [c[1], c[0]])).filter((r) => r.length > 3);
+  }
+  function styleBorder() {
+    if (!borderMask) return;
+    const cs = getComputedStyle(document.documentElement);
+    const bg = cs.getPropertyValue('--bg').trim() || '#0e1230';
+    const accent = cs.getPropertyValue('--accent').trim() || '#8f9bee';
+    borderMask.setStyle({ fillColor: bg, fillOpacity: 0.62 });
+    borderLine.setStyle({ color: accent, opacity: 0.85 });
+  }
+
   // ---------- высота приложения, тема, Telegram ----------
   const PALETTE = { dark: '#151a42', light: '#ffffff' };
   let appH = 0;
   let mapInst = null; // карта создаётся ниже; typeof на const до объявления бросил бы ReferenceError
+  let tilesLayer = null;
+  let borderMask = null, borderLine = null;
   function setAppH() {
     const h = Math.round(TG.viewportHeight() || window.innerHeight);
     if (h && h !== appH) {
@@ -111,10 +141,13 @@
   }
   function applyTheme() {
     const th = effectiveTheme();
+    const changed = document.documentElement.dataset.theme !== th;
     document.documentElement.dataset.theme = th;
+    if (changed && tilesLayer && state.mapStyle === 'wupper') tilesLayer.redraw(); // тайлы перекрашиваются под тему
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = PALETTE[th];
     TG.setChrome(PALETTE[th]);
+    styleBorder();
   }
   if (window.matchMedia) {
     const mq = window.matchMedia('(prefers-color-scheme: light)');
@@ -161,18 +194,33 @@
   });
   mapInst = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-  map.fitBounds(CFG.CITY.bounds);
+  map.fitBounds(CFG.CITY.bounds, viewPad());
   // Если тайлы не грузятся (блокировка OSM, нет Referer, нет сети), говорим об этом, а не показываем пустую карту.
-  const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const TILE_OPTS = {
     maxZoom: 19,
     attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
-  }).addTo(map);
+  };
+  // Вид «Wupper» перекрашивает тайлы в canvas (js/mapstyle.js): одинаково в браузере и в WebView Telegram
+  const tiles = (window.WL_MAPSTYLE
+    ? window.WL_MAPSTYLE.layer(L, TILE_URL, TILE_OPTS, () => ({ style: state.mapStyle, theme: document.documentElement.dataset.theme }),
+      () => { document.documentElement.dataset.tintfail = '1'; })
+    : L.tileLayer(TILE_URL, TILE_OPTS)).addTo(map);
+  tilesLayer = tiles;
   let tileOk = 0, tileErr = 0;
   tiles.on('tileload', () => { tileOk++; if (state.mapProblem === 'tileFail') { state.mapProblem = null; syncFreshness(); } });
   tiles.on('tileerror', () => {
     tileErr++;
     if (tileOk === 0 && tileErr >= 4 && !state.mapProblem) { state.mapProblem = 'tileFail'; syncFreshness(); }
   });
+
+  const cityRings = ringsOf(window.WL_BORDER);
+  if (cityRings.length) {
+    const world = [[85, -180], [85, 180], [-85, 180], [-85, -180]];
+    borderMask = L.polygon([world, ...cityRings], { stroke: false, fillOpacity: 0.62, interactive: false }).addTo(map);
+    borderLine = L.polygon(cityRings, { fill: false, weight: 2, dashArray: '7 6', interactive: false }).addTo(map);
+    styleBorder();
+  }
 
   const cluster = L.markerClusterGroup({
     maxClusterRadius: 48, showCoverageOnHover: false, spiderfyOnMaxZoom: true,
@@ -311,6 +359,7 @@
     state.mapStyle = v;
     store.set('wl_mapstyle', v);
     document.documentElement.dataset.mapstyle = v;
+    if (tilesLayer) tilesLayer.redraw();
     applyI18n();
   }
   function setThemePref(p) {
@@ -600,7 +649,10 @@
 
   // На телефоне карточка закрывает нижнюю часть карты: сдвигаем центр так, чтобы объект остался виден.
   function setViewAbove(latlng, zoom) {
-    if (isDesktop()) return map.setView(latlng, zoom, { animate: true });
+    if (isDesktop()) { // центр свободной части карты правее панели на половину её ширины
+      const pt = map.project(latlng, zoom).subtract([206, 0]);
+      return map.setView(map.unproject(pt, zoom), zoom, { animate: true });
+    }
     const lift = Math.min(window.innerHeight * 0.3, 260);
     const pt = map.project(latlng, zoom).add([0, lift]);
     map.setView(map.unproject(pt, zoom), zoom, { animate: true });
@@ -610,7 +662,7 @@
     if (!layer) return;
     if (typeof layer.getRadius === 'function') {
       // приблизительная область (район): показываем её целиком, границы считаем без обращения к карте
-      map.flyToBounds(L.latLng(layer.getLatLng()).toBounds(layer.getRadius() * 2), { padding: [40, 40] });
+      map.flyToBounds(L.latLng(layer.getLatLng()).toBounds(layer.getRadius() * 2), viewPad());
     } else if (layer.getLatLng) {
       const go = () => setViewAbove(layer.getLatLng(), Math.max(map.getZoom(), 15));
       if (cluster.hasLayer(layer)) cluster.zoomToShowLayer(layer, go); else go();
@@ -1061,15 +1113,15 @@
   $('#districtSel').addEventListener('change', (e) => {
     state.district = e.target.value;
     const d = DISTRICTS.find((x) => x.id === state.district);
-    if (d) map.flyToBounds(L.latLng(d.c).toBounds(d.r * 2), { padding: [20, 20] });
-    else map.flyToBounds(CFG.CITY.bounds);
+    if (d) map.flyToBounds(L.latLng(d.c).toBounds(d.r * 2), viewPad());
+    else map.flyToBounds(CFG.CITY.bounds, viewPad());
     render();
   });
   $('#timeSel').addEventListener('change', (e) => { state.hours = parseInt(e.target.value, 10) || DEFAULT_HOURS; render(); load(); });
   $('#cityBtn').addEventListener('click', () => {
     state.district = ''; $('#districtSel').value = '';
     closeDetail(); closeDropdowns();
-    map.flyToBounds(CFG.CITY.bounds);
+    map.flyToBounds(CFG.CITY.bounds, viewPad());
     render();
   });
   map.on('click', () => { closeDropdowns(); if (!isDesktop()) setSheet('peek'); });

@@ -37,9 +37,8 @@ a { color: var(--accent); }
 svg { display: block; flex: none; }
 
 #map { position: fixed; inset: 0; background: var(--bg); z-index: 0; }
-:root[data-mapstyle="wupper"][data-theme="dark"] .leaflet-tile-pane { filter: url(#wl-night); }
-:root[data-mapstyle="wupper"][data-theme="light"] .leaflet-tile-pane { filter: url(#wl-day); }
-:root[data-mapstyle="classic"][data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.88) contrast(.92) saturate(.55); }
+:root[data-mapstyle="classic"][data-theme="dark"] .leaflet-tile-pane,
+:root[data-mapstyle="wupper"][data-tintfail][data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.88) contrast(.92) saturate(.55); }
 .leaflet-container { font-family: var(--font); background: var(--bg); }
 .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 85%, transparent) !important; color: var(--muted) !important; font-size: 10px; }
 .leaflet-control-attribution a { color: var(--muted) !important; }
