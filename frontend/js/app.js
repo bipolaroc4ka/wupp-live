@@ -210,9 +210,18 @@
     const ms = et ? Date.parse(et) : NaN;
     return Number.isFinite(ms) ? (Date.now() - ms) / 86400000 : null;
   }
+  // Объявленный срок действия (WSW, город): дни между началом и концом, если оба известны
+  const LONG_SPAN_DAYS = 7;
+  function spanDays(ev) {
+    const a = Date.parse(ev.valid_from), b = Date.parse(ev.valid_until);
+    return Number.isFinite(a) && Number.isFinite(b) ? (b - a) / 86400000 : null;
+  }
   function isLongTerm(ev) {
+    if (ev.status !== 'ACTIVE') return false;
     const a = ageDays(ev);
-    return ev.status === 'ACTIVE' && a != null && a >= LONG_TERM_DAYS;
+    if (a != null && a >= LONG_TERM_DAYS) return true;
+    const sp = spanDays(ev); // объезд на 3 месяца — долгосрочный, даже если сообщение опубликовано недавно
+    return sp != null && sp >= LONG_SPAN_DAYS;
   }
   const RANK = { LIVE: 0, ACTIVE: 1, RECENT: 2, EXPIRED: 3, RESOLVED: 4 };
   // свежесть для сортировки: более позднее из «произошло» и «опубликовано» (как окно времени в API)
@@ -341,7 +350,10 @@
 
   function listTimeText(ev) {
     const et = eventTimeRef(ev);
-    if (isLongTerm(ev)) return t('sinceDays', { n: String(Math.floor(ageDays(ev))) });
+    if (isLongTerm(ev)) {
+      if (eventTimeRef(ev) && ageDays(ev) >= LONG_TERM_DAYS) return t('sinceDays', { n: String(Math.floor(ageDays(ev))) });
+      if (ev.valid_until) return `${t('untilShort')} ${fmtD(ev.valid_until)}`;
+    }
     if (et && ev.time_precision === 'minute') return rel(et);
     if (et && ev.time_precision === 'day') return fmtD(et);
     if (ev.published_at) return `${t('pubShort')} ${rel(ev.published_at)}`;
@@ -528,7 +540,7 @@
     // Срок действия: честно говорим, что даты окончания у нас нет, а не делаем вид, что событие актуально
     const note = $('#dNote');
     const hasEnd = !!(ev.expires_at || ev.valid_until);
-    if (isLongTerm(ev) && !hasEnd) {
+    if (isLongTerm(ev) && !hasEnd && eventTimeRef(ev)) {
       note.textContent = t('longDetail', { n: String(Math.floor(ageDays(ev))), date: fmtDY(ev.event_time) });
       note.hidden = false;
     } else if (ev.source === 'autobahn' && ev.status === 'ACTIVE' && !hasEnd) {
