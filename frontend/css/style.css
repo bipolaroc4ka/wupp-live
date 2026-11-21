@@ -6,9 +6,9 @@
    карта перекрашена SVG-фильтрами из index.html (#wl-night, #wl-day). Классический вид карты включается в меню. */
 :root {
   --bg: #0e1230; --surface: #151a42; --surface-2: #1e2558; --line: #2f3878;
-  --text: #eef0ff; --muted: #9ba5dc; --accent: #8d9bff; --accent-ink: #0b0e26; --ok: #46f0c0;
+  --text: #eef0ff; --muted: #9ba5dc; --accent: #8f9bee; --accent-ink: #0b0e26; --ok: #46f0c0;
   --danger: #ff5470; --warn: #ffc547; --shadow: 0 8px 28px rgba(3, 5, 25, .6);
-  --c-emergency: #ff4d6a; --c-traffic: #ff8a2a; --c-roadworks: #ffd23f; --c-transit: #38e8c6; --c-infra: #3db8ff; --c-events: #b98bff;
+  --c-emergency: #f0586f; --c-traffic: #ee8a3c; --c-roadworks: #e6bf4c; --c-transit: #45cfb4; --c-infra: #52a9e4; --c-events: #a98fe0;
   --pin-fg: #0b0e26; --pin-ring: #f3f5ff; --pin-drop: rgba(2, 3, 18, .75);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --safe-t: calc(env(safe-area-inset-top, 0px) + var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
@@ -22,7 +22,7 @@
   --bg: #e9efff; --surface: #ffffff; --surface-2: #eef2ff; --line: #c9d3f6;
   --text: #0f1646; --muted: #4a5594; --accent: #3b4fe0; --accent-ink: #ffffff; --ok: #0a8f68;
   --danger: #d42a4a; --warn: #9a6a00; --shadow: 0 8px 28px rgba(30, 45, 140, .22);
-  --c-emergency: #e5254d; --c-traffic: #e8650f; --c-roadworks: #b88700; --c-transit: #0c9e83; --c-infra: #0b86d1; --c-events: #7c3fd6;
+  --c-emergency: #d63a55; --c-traffic: #d9701f; --c-roadworks: #a98000; --c-transit: #0f9580; --c-infra: #1a7fc2; --c-events: #7a4cc4;
   --pin-fg: #ffffff; --pin-ring: #ffffff; --pin-drop: rgba(20, 30, 110, .45);
 }
 
@@ -94,9 +94,11 @@ svg { display: block; flex: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn:disabled { opacity: .5; cursor: default; }
 #cityBtn { width: 100%; }
-.seg { display: flex; gap: 4px; padding: 3px; margin: 0 0 6px; border-radius: 10px; background: var(--surface-2); }
+.seg { display: flex; min-width: 0; gap: 4px; padding: 3px; margin: 0 0 6px; border-radius: 10px; background: var(--surface-2); }
 .seg button { flex: 1; height: 34px; border: 0; border-radius: 8px; background: transparent; font-size: 13.5px; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 650; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); }
+#langSeg { display: grid; gap: 6px; padding: 0; margin: 0 0 6px; background: none; }
+#langSeg .seg { margin: 0; }
 .mi { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); text-align: left; text-decoration: none; font-size: 15px; }
 .mi:hover { background: var(--surface-2); }
 
