@@ -154,8 +154,11 @@
     return `${mi} ${t('u_m')}`;
   }
 
-  // Положение города рассчитывается с учётом места под боковую панель на десктопе.
-  // Ограничений maxBounds намеренно нет: карту можно свободно перемещать за пределы Wuppertal.
+    // ---------- карта и границы перемещения ----------
+  // Центрирование города учитывает боковую панель на десктопе.
+  // Ограничения перемещения рассчитываются динамически с учётом
+  // размеров экрана и свободной области карты.
+
   const cityFitOptions = () => {
     if (window.matchMedia('(min-width: 900px)').matches) {
       return {
@@ -168,29 +171,104 @@
   };
 
   const map = L.map('map', {
-  zoomControl: false,
-  minZoom: 5,
-  maxBounds: CFG.CITY.bounds,
-  maxBoundsViscosity: 1.0,
-  preferCanvas: true
-});
+    zoomControl: false,
+    minZoom: 5,
+    maxBoundsViscosity: 1.0,
+    preferCanvas: true
+  });
 
   mapInst = map;
+
   L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  // Рассчитываем допустимую область перемещения.
+  // Она учитывает не только границы Wuppertal, но и свободное
+  // пространство карты за пределами города, необходимое для
+  // правильного центрирования при наличии боковой панели.
+  function getCityMaxBounds() {
+    const zoom = map.getZoom();
+    const size = map.getSize();
+
+    const cityBounds = L.latLngBounds(CFG.CITY.bounds);
+
+    const northWest = map.project(cityBounds.getNorthWest(), zoom);
+    const southEast = map.project(cityBounds.getSouthEast(), zoom);
+
+    const desktop = window.matchMedia('(min-width: 900px)').matches;
+
+    const padding = desktop
+      ? { left: 400, right: 20, top: 100, bottom: 20 }
+      : { left: 20, right: 20, top: 20, bottom: 20 };
+
+    const cityWidth = southEast.x - northWest.x;
+    const cityHeight = southEast.y - northWest.y;
+
+    // Если город занимает меньше места, чем доступная область карты,
+    // расширяем ограничения симметрично, чтобы карта не смещалась.
+    const extraX = Math.max(
+      0,
+      (size.x - (cityWidth + padding.left + padding.right)) / 2
+    );
+
+    const extraY = Math.max(
+      0,
+      (size.y - (cityHeight + padding.top + padding.bottom)) / 2
+    );
+
+    const boundsNorthWest = map.unproject([
+      northWest.x - padding.left - extraX,
+      northWest.y - padding.top - extraY
+    ], zoom);
+
+    const boundsSouthEast = map.unproject([
+      southEast.x + padding.right + extraX,
+      southEast.y + padding.bottom + extraY
+    ], zoom);
+
+    return L.latLngBounds(boundsNorthWest, boundsSouthEast);
+  }
+
+  function updateCityMaxBounds() {
+    if (!map || !map.getSize().x || !map.getSize().y) return;
+
+    map.setMaxBounds(getCityMaxBounds());
+  }
 
   function fitCity(animate = false) {
     const options = cityFitOptions();
-    if (animate) map.flyToBounds(CFG.CITY.bounds, options);
-    else map.fitBounds(CFG.CITY.bounds, options);
+
+    if (animate) {
+      map.flyToBounds(CFG.CITY.bounds, options);
+    } else {
+      map.fitBounds(CFG.CITY.bounds, options);
+    }
   }
 
   function fitDistrict(district) {
-    if (!district) return fitCity(true);
+    if (!district) {
+      return fitCity(true);
+    }
+
     map.flyToBounds(
       L.latLng(district.c).toBounds(district.r * 2),
       cityFitOptions()
     );
   }
+
+  // Пересчитываем ограничения при изменении масштаба и размеров карты.
+  map.on('zoomend', updateCityMaxBounds);
+  map.on('resize', updateCityMaxBounds);
+
+  // Leaflet должен получить реальные размеры контейнера после первого layout.
+  requestAnimationFrame(() => {
+    map.invalidateSize({ pan: false });
+
+    // Сначала правильно позиционируем город.
+    fitCity(false);
+
+    // Затем устанавливаем ограничения с учётом текущего масштаба.
+    updateCityMaxBounds();
+  });
 
   // Leaflet должен получить реальные размеры контейнера после первого layout браузера.
   // Иначе fitBounds может рассчитать центр по промежуточной ширине/высоте.
