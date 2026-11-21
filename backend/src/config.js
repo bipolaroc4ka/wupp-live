@@ -11,13 +11,15 @@ export const CITY = {
 
 export const CATEGORIES = [
   // экстренные
-  'fire', 'accident', 'police', 'rescue', 'hazard', 'emergency_other',
+  'fire', 'accident', 'police', 'rescue', 'hazard', 'evacuation', 'emergency_other',
   // дороги
   'road_jam', 'road_closure', 'road_accident', 'roadworks', 'road_obstacle', 'traffic_other',
   // транспорт (источник пока не подключён)
   'transit_delay', 'transit_cancel', 'transit_detour', 'transit_stop',
   // инфраструктура и предупреждения
   'infra_power', 'infra_water', 'infra_damage', 'flood', 'heavy_rain', 'warning_other',
+  // погодные предупреждения DWD
+  'weather_storm', 'weather_thunder', 'weather_ice', 'weather_heat', 'weather_other',
   // прочее
   'event_big', 'event_crowd', 'event_restriction'
 ];

@@ -30,7 +30,6 @@ npx wrangler d1 execute wuppertal-live --remote --file=./schema.sql
 
 - `NOMINATIM_CONTACT`: ваша почта или адрес проекта. Nominatim требует идентифицирующий User-Agent.
 - `ALLOWED_ORIGINS`: origin вашего сайта без пути, например `https://ваш-логин.github.io`. Пока можно оставить `*`, но для работы лучше сузить.
-- `PRESSEPORTAL_OFFICE_IDS`: `115885` — Feuerwehr Wuppertal. Чтобы добавить Polizei Wuppertal, откройте её страницу на presseportal.de и возьмите число из адреса `…/nr/<ID>`; перечислите ID через запятую. Полицейский newsroom охватывает также Remscheid и Solingen; код оставляет только релизы с датой-строкой «Wuppertal (ots)».
 - `PRESS_TTL_HOURS`, `AUTOBAHN_ROADS`: при необходимости.
 - `NINA_ARS` (необязательно, по умолчанию `051240000000`).
 
@@ -40,13 +39,12 @@ Cron-выражения в `[triggers]` должны совпадать с `CRON
 
 ```bash
 npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put PRESSEPORTAL_API_KEY
 ```
 
 `ADMIN_TOKEN` — придумайте случайную строку не короче 16 символов (лучше 32+), например:
 `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`. Короткие токены сервер отклоняет.
 
-Ключ Presseportal получите на https://api.presseportal.de (там же условия использования). Без него источник Presseportal отключён с понятной ошибкой в админке, остальные работают.
+Presseportal читается из публичных RSS-лент: ключ не нужен.
 
 Для локального запуска создайте `backend/.dev.vars` (файл в .gitignore) по образцу `.dev.vars.example`.
 
