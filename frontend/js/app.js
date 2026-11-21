@@ -155,16 +155,13 @@
   }
 
   // ---------- карта ----------
-  // Карта ограничена Wuppertal: дальше границ города (с небольшим запасом) не прокрутить и не отдалить
-  const CITY_VIEW = L.latLngBounds(CFG.CITY.bounds).pad(0.12);
   const map = L.map('map', {
     zoomControl: false, minZoom: 10, preferCanvas: true,
-    maxBounds: CITY_VIEW, maxBoundsViscosity: 1.0
+    maxBounds: L.latLngBounds(CFG.CITY.bounds).pad(0.8)
   });
   mapInst = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   map.fitBounds(CFG.CITY.bounds);
-  if (map.getBoundsZoom && map.setMinZoom) { const z = Math.floor(map.getBoundsZoom(CITY_VIEW)); map.setMinZoom(Math.max(10, z)); }
   // Если тайлы не грузятся (блокировка OSM, нет Referer, нет сети), говорим об этом, а не показываем пустую карту.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
