@@ -168,10 +168,12 @@
   };
 
   const map = L.map('map', {
-    zoomControl: false,
-    minZoom: 5,
-    preferCanvas: true
-  });
+  zoomControl: false,
+  minZoom: 5,
+  maxBounds: CFG.CITY.bounds,
+  maxBoundsViscosity: 1.0,
+  preferCanvas: true
+});
 
   mapInst = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
