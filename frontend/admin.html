@@ -352,6 +352,13 @@
 
       <div class="cards" id="mainCards"></div>
 
+      <div class="panel">
+        <h3>Уникальные посетители по дням</h3>
+        <p class="muted small" id="visitorsSummary"></p>
+        <div id="visitorsStats"></div>
+        <p class="muted small">Один посетитель = одно устройство и браузер за день. Cookie не используются, IP не хранится. Между днями посетителей сопоставить нельзя, поэтому недельная и месячная суммы — это «посетителей-дней».</p>
+      </div>
+
       <div class="grid-2">
         <div class="panel">
           <h3>События по статусам</h3>
@@ -1391,6 +1398,17 @@
         `Обновлено: ${fmt(data.generated_at)}`;
 
       renderCards(data);
+
+      const v = data.visitors;
+      $('#visitorsSummary').textContent = v
+        ? `Сегодня: ${number(v.today)} · вчера: ${number(v.yesterday)} · за 7 дней: ${number(v.visitor_days_7)} · за 30 дней: ${number(v.visitor_days_30)}`
+        : 'Нет данных (выполните миграцию 005_visits.sql)';
+      renderStatsList(
+        $('#visitorsStats'),
+        v ? v.daily.slice(0, 14).map((d) => ({ n: d.n, day: `${d.day}  (Telegram ${d.tg || 0}, сайт ${d.web || 0}, PWA ${d.pwa || 0})` })) : [],
+        'day',
+        'Пока нет визитов'
+      );
 
       renderStatsList(
         $('#statusStats'),

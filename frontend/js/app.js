@@ -1043,6 +1043,20 @@
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
 
+
+  // Счётчик уникальных посетителей: один запрос без cookie и без записи на устройство (учёт на сервере, см. «Datenschutz»).
+  // Не отправляется при включённом «Do Not Track»; не чаще раза за сессию вкладки.
+  (function countVisit() {
+    try {
+      if (!CFG.API_BASE || navigator.doNotTrack === '1' || /^(localhost|127\.)/.test(location.hostname)) return;
+      if (sessionStorage.getItem('wl_hit')) return;
+      sessionStorage.setItem('wl_hit', '1');
+    } catch { /* без sessionStorage просто считаем при каждой загрузке: сервер всё равно учитывает посетителя раз в день */ }
+    const standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+    const p = TG.isTma ? 'tg' : standalone ? 'pwa' : 'web';
+    fetch(`${CFG.API_BASE.replace(/\/+$/, '')}/api/hit?p=${p}&l=${state.lang === 'ru' ? 'ru' : 'de'}`, { method: 'POST', keepalive: true }).catch(() => {});
+  })();
+
   // ---------- загрузка данных ----------
   async function api(path) {
     const ctrl = new AbortController();

@@ -5,6 +5,7 @@ import { SOURCES, runScheduled, runSource, ensureSources } from './cron.js';
 import { ISO } from './util.js';
 import { loadTranslations, textHash } from './translate.js';
 import { fetchWeather } from './weather.js';
+import { handleHit, visitorStats } from './visitors.js';
 
 // ---------- вспомогательное ----------
 
@@ -221,7 +222,7 @@ async function handleAdmin(req, env, url, path) {
     const bySource = (await db.prepare('SELECT source, COUNT(*) AS n FROM events GROUP BY source').all()).results || [];
     const errors = (await db.prepare('SELECT * FROM error_log ORDER BY id DESC LIMIT 30').all()).results || [];
     const geo = await db.prepare('SELECT COUNT(*) AS n FROM geocode_cache WHERE found = 1').first();
-    return { generated_at: ISO(Date.now()), sources, events_by_status: byStatus, events_by_source: bySource, errors, geocode_cached: geo ? geo.n : 0 };
+    return { generated_at: ISO(Date.now()), sources, events_by_status: byStatus, events_by_source: bySource, errors, geocode_cached: geo ? geo.n : 0, visitors: await visitorStats(db).catch(() => null) };
   }
 
   if (req.method === 'GET' && path === '/api/admin/events') {
@@ -282,6 +283,11 @@ export default {
     try {
       if (path === '/' || path === '/api/health') {
         return json(env, req, { ok: true, service: 'wuppertal-live-api', time: ISO(Date.now()) });
+      }
+
+      if (req.method === 'POST' && path === '/api/hit') {
+        if (!rateLimited(`hit:${clientIp(req)}`, 30, 60_000)) await handleHit(req, env, url).catch((e) => console.error('hit failed:', e && e.message));
+        return new Response(null, { status: 204, headers: { ...corsHeaders(env, req), ...SECURITY_HEADERS, 'cache-control': 'no-store' } });
       }
 
       if (req.method === 'GET' && path === '/api/events') {

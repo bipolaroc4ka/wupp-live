@@ -108,3 +108,12 @@ CREATE TABLE IF NOT EXISTS nina_skip (
   reason  TEXT,
   ts      TEXT NOT NULL
 );
+
+-- Уникальные посетители по дням (хэш IP+User-Agent с ежедневно меняющейся солью, 90 дней).
+CREATE TABLE IF NOT EXISTS visits (
+  day      TEXT NOT NULL,
+  vid      TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  lang     TEXT,
+  PRIMARY KEY (day, vid)
+);

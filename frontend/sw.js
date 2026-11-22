@@ -1,6 +1,6 @@
 // Service worker: кэширует только оболочку приложения. Данные API и тайлы карты НЕ кэшируются,
 // чтобы старые сведения никогда не выдавались за актуальные.
-const VERSION = 'wl-shell-v19';
+const VERSION = 'wl-shell-v20';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'js/config.js', 'js/icons.js', 'js/tg.js', 'js/mapstyle.js', 'js/city-border.js', 'js/i18n.js', 'js/app.js',
   'manifest.webmanifest', 'icons/icon.svg', 'impressum.html', 'datenschutz.html'
