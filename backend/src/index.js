@@ -215,14 +215,32 @@ async function cached(req, env, ctx, url, ttl, producer) {
 async function handleAdmin(req, env, url, path) {
   const db = env.DB;
 
+  // Браузер кодирует «:» в id как %3A, а в url.pathname оно остаётся закодированным: для разбора маршрутов декодируем.
+  try { path = decodeURIComponent(path); } catch { /* оставляем как есть */ }
+  const rowsOf = async (sql, ...b) => (await db.prepare(sql).bind(...b).all()).results || [];
+
   if (req.method === 'GET' && path === '/api/admin/overview') {
     await ensureSources(env);
-    const sources = (await db.prepare('SELECT * FROM sources ORDER BY id').all()).results || [];
-    const byStatus = (await db.prepare('SELECT status, COUNT(*) AS n FROM events GROUP BY status').all()).results || [];
-    const bySource = (await db.prepare('SELECT source, COUNT(*) AS n FROM events GROUP BY source').all()).results || [];
-    const errors = (await db.prepare('SELECT * FROM error_log ORDER BY id DESC LIMIT 30').all()).results || [];
-    const geo = await db.prepare('SELECT COUNT(*) AS n FROM geocode_cache WHERE found = 1').first();
-    return { generated_at: ISO(Date.now()), sources, events_by_status: byStatus, events_by_source: bySource, errors, geocode_cached: geo ? geo.n : 0, visitors: await visitorStats(db).catch(() => null) };
+    const sources = await rowsOf('SELECT * FROM sources ORDER BY id');
+    const total = await db.prepare('SELECT COUNT(*) AS n, SUM(latitude IS NOT NULL AND longitude IS NOT NULL) AS withc FROM events').first();
+    const sup = await db.prepare('SELECT COUNT(*) AS n FROM suppressed').first();
+    const geo = await db.prepare('SELECT COUNT(*) AS total, SUM(found = 1) AS found FROM geocode_cache').first();
+    const found = (geo && geo.found) || 0, geoTotal = (geo && geo.total) || 0;
+    return {
+      generated_at: ISO(Date.now()),
+      sources,
+      events_total: (total && total.n) || 0,
+      events_by_status: await rowsOf('SELECT status, COUNT(*) AS n FROM events GROUP BY status ORDER BY n DESC'),
+      events_by_geo_precision: await rowsOf('SELECT geo_precision, COUNT(*) AS n FROM events GROUP BY geo_precision ORDER BY n DESC'),
+      events_by_source: await rowsOf('SELECT source, COUNT(*) AS n FROM events GROUP BY source ORDER BY n DESC'),
+      events_by_category: await rowsOf('SELECT category, COUNT(*) AS n FROM events GROUP BY category ORDER BY n DESC'),
+      coordinates: { with_coordinates: (total && total.withc) || 0, without_coordinates: ((total && total.n) || 0) - ((total && total.withc) || 0) },
+      suppressed_total: (sup && sup.n) || 0,
+      geocode: { total: geoTotal, found, not_found: geoTotal - found },
+      geocode_cached: found,
+      errors: await rowsOf('SELECT * FROM error_log ORDER BY id DESC LIMIT 30'),
+      visitors: await visitorStats(db).catch(() => null)
+    };
   }
 
   if (req.method === 'GET' && path === '/api/admin/events') {
@@ -233,12 +251,37 @@ async function handleAdmin(req, env, url, path) {
     if (st && STATUSES.includes(st)) { where.push('status = ?'); binds.push(st); }
     const src = url.searchParams.get('source');
     if (src && /^[a-z]+$/.test(src)) { where.push('source = ?'); binds.push(src); }
-    const sql = `SELECT * FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
-    const rows = (await db.prepare(sql).bind(...binds, limit, offset).all()).results || [];
-    return { count: rows.length, events: rows };
+    const cat = url.searchParams.get('category');
+    if (cat && /^[a-z_]+$/.test(cat)) { where.push('category = ?'); binds.push(cat); }
+    const geoP = url.searchParams.get('geo_precision');
+    if (geoP && /^[a-z]+$/.test(geoP)) { where.push('geo_precision = ?'); binds.push(geoP); }
+    const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
+    if (q) {
+      const like = `%${q.replace(/[\\%_]/g, '\\$&')}%`;
+      where.push("(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR location_name LIKE ? ESCAPE '\\' OR district LIKE ? ESCAPE '\\')");
+      binds.push(like, like, like, like);
+    }
+    const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const total = await db.prepare(`SELECT COUNT(*) AS n FROM events ${w}`).bind(...binds).first();
+    const rows = await rowsOf(`SELECT * FROM events ${w} ORDER BY updated_at DESC LIMIT ? OFFSET ?`, ...binds, limit, offset);
+    return { count: rows.length, total: (total && total.n) || 0, events: rows };
   }
 
-  let m = path.match(/^\/api\/admin\/events\/([a-z]+:[0-9a-f]{16})$/);
+  if (req.method === 'GET' && path === '/api/admin/suppressed') {
+    const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit'), 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(url.searchParams.get('offset'), 10) || 0, 0);
+    const total = await db.prepare('SELECT COUNT(*) AS n FROM suppressed').first();
+    const items = await rowsOf('SELECT id, ts FROM suppressed ORDER BY ts DESC LIMIT ? OFFSET ?', limit, offset);
+    return { total: (total && total.n) || 0, items };
+  }
+
+  let m = path.match(/^\/api\/admin\/suppressed\/([a-z]+:[0-9a-f]{16})$/);
+  if (m && req.method === 'DELETE') {
+    await db.prepare('DELETE FROM suppressed WHERE id = ?').bind(m[1]).run();
+    return { restored: m[1] };
+  }
+
+  m = path.match(/^\/api\/admin\/events\/([a-z]+:[0-9a-f]{16})$/);
   if (m && req.method === 'DELETE') {
     const id = m[1];
     await db.batch([
