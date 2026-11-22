@@ -439,6 +439,16 @@ console.log('\n[mobidrom] DATEX II: типы ограничений, време�
   eq([closed.expires_at, closed.event_time !== null], [null, true], 'без даты окончания срока нет (закрывается по исчезновению из ленты)');
   r = await runSource(env, 'mobidrom');
   eq(r.changes, 0, 'повторный запуск ничего не меняет');
+  // в ленте нет работ в Вуппертале (вся геометрия разобрана и лежит за городом): это пустой результат, а не ошибка
+  const xmlOut = `<?xml version="1.0"?><d2LogicalModel xmlns="http://datex2.eu/schema/2/2_0"><payloadPublication>
+    <situation id="S4">${rec('R4', 'MaintenanceWorks', { comment: 'Baustelle Düsseldorf Königsallee', pos: '51.2200 6.7700' })}</situation>
+    </payloadPublication><!-- ${'x'.repeat(1200)} --></d2LogicalModel>`;
+  globalThis.fetch = async (url, init) => /mobilitaetsdaten\.nrw/.test(String(url)) ? new Response(xmlOut, { status: 200 }) : realFetch(url, init);
+  r = await runSource(env, 'mobidrom');
+  ok(r.ok, 'mobidrom: лента без работ в Вуппертале — не ошибка');
+  r = await runSource(env, 'mobidrom');
+  const left = await rows(env, "SELECT status FROM events WHERE source = 'mobidrom' AND status IN ('ACTIVE','LIVE')");
+  eq(left.length, 0, 'прежние работы закрываются после двух запусков без них');
   globalThis.fetch = realFetch;
 }
 
