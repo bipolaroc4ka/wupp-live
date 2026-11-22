@@ -866,6 +866,21 @@ console.log('\n[api] публичный и админский API');
   const ADM = { authorization: 'Bearer ' + 'x'.repeat(32) };
   res = await get('/api/admin/overview', ADM);
   eq(res.status, 200, 'верный токен -> 200');
+  // уникальные посетители
+  const hit = (ip, ua, q = '?p=web&l=de') => api.fetch(new Request('https://x.test/api/hit' + q, { method: 'POST', headers: { 'cf-connecting-ip': ip, 'user-agent': ua } }), env, { waitUntil() {} });
+  res = await hit('1.1.1.1', 'Mozilla/5.0 A');
+  eq(res.status, 204, 'визит: 204 без тела');
+  await hit('1.1.1.1', 'Mozilla/5.0 A');
+  await hit('2.2.2.2', 'Mozilla/5.0 B', '?p=tg&l=ru');
+  await hit('3.3.3.3', 'Googlebot/2.1');
+  eq((await rows(env, 'SELECT COUNT(*) n FROM visits'))[0].n, 2, 'повтор того же посетителя не считается, бот не считается');
+  const vrow = await rows(env, 'SELECT * FROM visits ORDER BY platform');
+  ok(vrow.every((r) => /^[0-9a-f]{16}$/.test(r.vid) && !JSON.stringify(r).includes('1.1.1.1') && !JSON.stringify(r).includes('Mozilla')), 'в базе только хэш, без IP и User-Agent');
+  res = await get('/api/admin/overview', ADM);
+  const ov = await res.json();
+  eq([ov.visitors.today, ov.visitors.daily[0].tg, ov.visitors.daily[0].web], [2, 1, 1], 'админка: уникальные за сегодня и разбивка по платформам');
+  res = await hit('9.9.9.9', 'X', '?p=evil&l=xx');
+  eq((await rows(env, "SELECT platform, lang FROM visits WHERE platform = 'web' AND lang IS NULL")).length, 1, 'неизвестные platform/lang приводятся к безопасным значениям');
   const noTok = await api.fetch(new Request('https://x.test/api/admin/overview', { headers: ADM }), { ...env, ADMIN_TOKEN: 'short' }, { waitUntil() {} });
   eq(noTok.status, 401, 'слишком короткий ADMIN_TOKEN отклоняется');
 
