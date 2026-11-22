@@ -466,6 +466,7 @@
 
   // Событие относится к Вупперталю, но его координата (участок автобана и т.п.) может лежать за границей города.
   // Маркер остаётся на своём месте, а вокруг него в маске затемнения делается «окно», чтобы карта была видна.
+  // То же для событий в пределах окна от границы: иначе рядом с меткой карта тёмная.
   function insideRing(pt, ring) {
     let in_ = false;
     for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
@@ -475,49 +476,69 @@
     return in_;
   }
   const inCity = (lat, lon) => cityRings.some((r) => insideRing([lat, lon], r));
-  // ближайшая точка границы города
-  function nearestBorder(lat, lon) {
-    const kx = Math.cos(lat * Math.PI / 180);
-    let best = null, bd = Infinity;
-    for (const r of cityRings) {
-      for (let i = 0; i < r.length; i++) {
-        const a = r[i], b = r[(i + 1) % r.length];
-        const ax = a[1] * kx, ay = a[0], dx = b[1] * kx - ax, dy = b[0] - ay;
-        const len = dx * dx + dy * dy;
-        let u = len ? ((lon * kx - ax) * dx + (lat - ay) * dy) / len : 0;
-        u = Math.max(0, Math.min(1, u));
-        const q = [ay + dy * u, (ax + dx * u) / kx];
-        const d = (q[0] - lat) ** 2 + ((q[1] - lon) * kx) ** 2;
-        if (d < bd) { bd = d; best = q; }
+  // «Окно» вокруг точки = круг радиусом WINDOW_R минус город, построенный по лучам от центра:
+  // кольцо не заходит в город, поэтому заливка с чётно-нечётным правилом не затемняет город заново.
+  const WINDOW_R = 2000, RAYS = 72;
+  function windowRings(lat, lon) {
+    const kx = Math.cos(lat * Math.PI / 180), M = 111320;
+    const toLL = (t, c, s) => [lat + (t * s) / M, lon + (t * c) / (M * kx)];
+    // расстояния до пересечений луча с границей города (в метрах, не дальше WINDOW_R)
+    const cross = (c, s) => {
+      const ts = [];
+      for (const r of cityRings) {
+        for (let i = 0; i < r.length; i++) {
+          const a = r[i], b = r[(i + 1) % r.length];
+          const ax = (a[1] - lon) * kx * M, ay = (a[0] - lat) * M, ex = (b[1] - a[1]) * kx * M, ey = (b[0] - a[0]) * M;
+          const den = c * ey - s * ex;
+          if (!den) continue;
+          const t = (ax * ey - ay * ex) / den, u = (ax * s - ay * c) / den;
+          if (t > 0 && t <= WINDOW_R && u >= 0 && u < 1) ts.push(t);
+        }
       }
+      return ts.sort((x, y) => x - y);
+    };
+    const rays = [];
+    for (let i = 0; i < RAYS; i++) { const a = (i / RAYS) * 2 * Math.PI; rays.push({ c: Math.cos(a), s: Math.sin(a) }); }
+    for (const ray of rays) ray.ts = cross(ray.c, ray.s);
+
+    if (!inCity(lat, lon)) { // центр снаружи: от центра до первого входа в город
+      return [rays.map((ray) => toLL(ray.ts.length ? ray.ts[0] : WINDOW_R, ray.c, ray.s))];
     }
-    return best;
-  }
-  // Кольцо-«окно» вокруг точки: части круга, попавшие внутрь города, прижимаются к границе,
-  // чтобы окно не перекрывалось с городом (иначе заливка с чётно-нечётным правилом снова затемнит пересечение).
-  const WINDOW_R = 2000;
-  function windowRing(lat, lon) {
-    const kx = Math.cos(lat * Math.PI / 180), ring = [];
-    for (let i = 0; i < 28; i++) {
-      const a = (i / 28) * 2 * Math.PI;
-      const p = [lat + (WINDOW_R / 111320) * Math.sin(a), lon + (WINDOW_R / (111320 * kx)) * Math.cos(a)];
-      ring.push(inCity(p[0], p[1]) ? nearestBorder(p[0], p[1]) : p);
+    // центр внутри города: подсвечиваем только то, что за границей (от выхода из города до края круга)
+    const lit = rays.map((ray) => ray.ts.length > 0);
+    if (!lit.some(Boolean)) return [];
+    let start = lit.indexOf(false);
+    if (start < 0) start = 0;
+    const out = [];
+    let run = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        out.push([...run.map((ray) => toLL(WINDOW_R, ray.c, ray.s)), ...run.slice().reverse().map((ray) => toLL(ray.ts[0], ray.c, ray.s))]);
+      }
+      run = [];
+    };
+    for (let k = 0; k < RAYS; k++) {
+      const ray = rays[(start + k) % RAYS];
+      if (ray.ts.length) run.push(ray); else flush();
     }
-    return ring;
+    flush();
+    return out;
   }
   let lastWindowSig = '';
   function updateMaskWindows(evs) {
     if (!borderMask) return;
     const centers = [];
     for (const ev of evs) {
-      if (ev.latitude == null || ev.longitude == null || inCity(ev.latitude, ev.longitude)) continue;
+      if (ev.latitude == null || ev.longitude == null) continue;
+      // окно нужно и событию за границей, и событию у самой границы (участок автобана уходит за город, а карта рядом тёмная)
+      if (inCity(ev.latitude, ev.longitude) && !windowRings(ev.latitude, ev.longitude).length) continue;
       if (centers.some((c) => haversine(c, [ev.latitude, ev.longitude]) < WINDOW_R)) continue; // близкие окна не накладываем
       centers.push([ev.latitude, ev.longitude]);
     }
     const sig = centers.map((c) => c.join(',')).join('|');
     if (sig === lastWindowSig) return;
     lastWindowSig = sig;
-    borderMask.setLatLngs([WORLD, ...cityRings, ...centers.map((c) => windowRing(c[0], c[1]))]);
+    borderMask.setLatLngs([WORLD, ...cityRings, ...centers.flatMap((c) => windowRings(c[0], c[1]))]);
   }
 
   function renderMap(evs) {
