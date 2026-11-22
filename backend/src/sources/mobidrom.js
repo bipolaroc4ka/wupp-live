@@ -547,7 +547,10 @@ export async function run(ctx) {
     (item) => item.hasGeometry && !item.coordinates
   ).length;
 
-  if (!withCoordinates) {
+  // Ни одной точки в Вуппертале — не всегда поломка: если у всех ситуаций геометрия разобрана и лежит за пределами
+  // города, то в Вуппертале сейчас просто нет дорожных работ из этой ленты. Тогда синхронизируем пустой список
+  // (старые записи закроются через resolveMissing). Если у части ситуаций геометрии нет, разбор мог сломаться: отказываемся.
+  if (!withCoordinates && parsed.some((item) => !item.hasGeometry)) {
     throw new Error('No usable Wuppertal coordinates in DATEX II situations; refusing sync');
   }
 
